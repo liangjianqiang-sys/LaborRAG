@@ -1,0 +1,38 @@
+# Web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+pydantic>=2.9.0
+
+# Environment
+python-dotenv>=1.0.1
+
+# LangChain 1.0
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langchain-community>=0.3.0
+langchain-huggingface>=0.1.0
+langchain-text-splitters>=0.3.0
+
+# Vector store
+faiss-cpu>=1.7.0
+
+# Embedding
+sentence-transformers>=3.0.0
+
+# Document loading
+pypdf>=5.0.0
+docx2txt>=0.8
+unstructured>=0.16.0
+
+# Chinese tokenization (for V2)
+jieba>=0.42
+rank-bm25>=0.2.2
+
+# Evaluation (V2)
+ragas>=0.1.0
+datasets>=2.14.0
+
+# LangGraph (V3)
+langgraph>=0.2.0
