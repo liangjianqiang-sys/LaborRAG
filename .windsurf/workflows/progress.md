@@ -5,7 +5,7 @@ description: 开发进度追踪 - 记录当前完成状态，对话丢失后快�
 # LaborRAG 开发进度
 
 ## 当前版本: V3 CRAG高级版
-## 当前阶段: V3 全部代码完成，待端到端测试
+## 当前阶段: V3 全部代码完成，端到端测试已通过，准备V4
 ## 最后更新: 2026-05-08
 
 ---
@@ -47,9 +47,9 @@ description: 开发进度追踪 - 记录当前完成状态，对话丢失后快�
 | 阶段4: 回答质量评估 | ✅ 已完成 | _grade_answer节点 + 忠实度判断 |
 | 阶段5: 多轮对话 | ✅ 已完成 | conversation.py + conversation_id + 上下文注入CRAG |
 | 阶段6: CRAG流程可视化 | ✅ 已完成 | ChatResponse.crag_steps + 前端CragStepsPanel |
-| 阶段7: 对比实验 | ✅ 已完成 | run_v3_comparison.py + 前端评估页更新 |
-| 端到端测试 | ⬜ 待做 | 需启动后端实际测试CRAG模式 |
-| 对比实验运行 | ⬜ 待做 | 需运行python run_v3_comparison.py |
+| 阶段7: 对比实验代码 | ✅ 已完成 | run_v3_comparison.py + 前端评估页更新 |
+| 端到端测试 | ✅ 已完成 | CRAG工作流实际测试通过 |
+| 对比实验运行 | ⏸ 延后V4后 | 需V4完成后统一运行四版对比 |
 
 ## V4 进度
 
