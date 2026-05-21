@@ -4,9 +4,9 @@ description: 开发进度追踪 - 记录当前完成状态，对话丢失后快�
 
 # LaborRAG 开发进度
 
-## 当前版本: V3 CRAG高级版
-## 当前阶段: V3 全部代码完成，端到端测试已通过，准备V4
-## 最后更新: 2026-05-08
+## 当前版本: V4 Agentic RAG多Agent版
+## 当前阶段: V4 核心代码完成，待端到端测试
+## 最后更新: 2026-05-20
 
 ---
 
@@ -51,11 +51,32 @@ description: 开发进度追踪 - 记录当前完成状态，对话丢失后快�
 | 端到端测试 | ✅ 已完成 | CRAG工作流实际测试通过 |
 | 对比实验运行 | ⏸ 延后V4后 | 需V4完成后统一运行四版对比 |
 
+## V3 升级优化进度
+
+| 阶段 | 状态 | 备注 |
+|------|------|------|
+| 层次化父子分块 | ✅ 已完成 | LawArticleSplitter父块+子块+parent_id，VectorStoreManager子块索引+parent_store持久化 |
+| 父子分块检索提升 | ✅ 已完成 | promote_children_to_parents()子块→父块替换+去重+最高分排序 |
+| 元数据过滤 | ✅ 已完成 | extract_article_ref()法条编号提取，FAISS filter+BM25后置过滤 |
+| HyDE查询增强 | ✅ 已完成 | 替换CRAG rewrite_query为HyDE，短查询(≤15字)条件触发 |
+| 上下文压缩 | ✅ 已完成 | retriever/compressor.py EmbeddingsFilter，余弦相似度<0.5丢弃，CRAG新增compress节点 |
+| Adaptive RAG | ✅ 已完成 | CRAGGraph→AdaptiveRAGGraph，复杂度分类(simple/medium/complex)+三路路由 |
+| Bug修复 | ✅ 已完成 | import os移到顶部、score_threshold=0.0 falsy修复、Hybrid RRF去重修复 |
+| 参数调优 | ✅ 已完成 | VECTOR_WEIGHT=0.7/BM25_WEIGHT=0.3/SCORE_THRESHOLD=0.3/COMPRESSION_THRESHOLD=0.5 |
+
 ## V4 进度
 
 | 阶段 | 状态 | 备注 |
 |------|------|------|
-| 全部 | ⬜ 未开始 | 需先完成V3 |
+| AgenticRAGGraph主框架 | ✅ 已完成 | agent_graph.py, 5个Agent节点+LangGraph状态图 |
+| Router Agent | ✅ 已完成 | LLM意图分类(retrieve/calculate/compare) |
+| Calculator Agent | ✅ 已完成 | 5种劳动法计算(加班费/经济补偿金/赔偿金/双倍工资/年休假工资) |
+| Comparator Agent | ✅ 已完成 | 双组检索+LLM结构化对比 |
+| Validator Agent | ✅ 已完成 | 合法性+幻觉验证，未通过追加警告 |
+| rag_engine集成 | ✅ 已完成 | RAG_MODE=agent，带降级兜底 |
+| config/schemas更新 | ✅ 已完成 | RAG_MODE支持simple|crag|agent |
+| 端到端测试 | ⬜ 待测试 | 需实际运行验证 |
+| 对比实验运行 | ⏸ 延后 | 需V1-V4四版统一对比 |
 
 ## 技术决策记录
 - 2026-04-23: 确定使用LangChain 1.0 + LCEL + LangGraph路线
@@ -75,3 +96,14 @@ description: 开发进度追踪 - 记录当前完成状态，对话丢失后快�
 - 2026-04-28: 参数调优CHUNK_SIZE=800/TOP_K=8，召回率从0.5提升至1.0
 - 2026-04-28: 修复ragas 0.4.x兼容性(EvaluationResult对象+LLM/Embedding传入)
 - 2026-04-28: 评估体系待V4后完善，需增加纠错成功率/Router准确率/计算准确率/对话连贯性等指标
+- 2026-05-19: 实现层次化父子分块(PARENT_CHILD_ENABLED)，子块索引+父块存储+promote提升
+- 2026-05-19: 实现元数据过滤(extract_article_ref)，FAISS filter+BM25后置过滤，法条编号精准查询
+- 2026-05-19: HyDE替换CRAG rewrite_query，短查询(≤15字)条件触发，成本不变精度提升
+- 2026-05-19: 修复score_threshold=0.0 falsy bug，Hybrid RRF子块级别融合去重
+- 2026-05-19: 参数调优VECTOR_WEIGHT=0.7/BM25_WEIGHT=0.3/SCORE_THRESHOLD=0.3
+- 2026-05-20: 实现上下文压缩EmbeddingsFilter(compressor.py)，CRAG retrieve→compress→grade_documents
+- 2026-05-20: 实现Adaptive RAG，CRAGGraph→AdaptiveRAGGraph，复杂度分类+三路路由(simple/medium/complex)
+- 2026-05-20: config.py新增COMPRESSION_THRESHOLD=0.5，RAG_MODE注释更新crag=Adaptive RAG
+- 2026-05-20: 实现V4 Agentic RAG，agent_graph.py五Agent协作(Router/Retriever/Calculator/Comparator/Validator)
+- 2026-05-20: Calculator Agent支持5种劳动法计算(加班费/经济补偿金/赔偿金/双倍工资/年休假工资)
+- 2026-05-20: rag_engine.py集成RAG_MODE=agent，带降级兜底，config RAG_MODE支持simple|crag|agent

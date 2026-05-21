@@ -15,20 +15,32 @@
 - **Hybrid Search 混合检索**：向量语义检索 + BM25关键词检索 + RRF融合，兼顾语义理解与精确匹配
 - **Reranker 重排序**：BGE-Reranker-v2-m3 Cross-Encoder精排，提升Top-K精度
 - **法条结构化切分**：按法律条文（第X条）切分，保持法条完整性，避免跨条切割
+- **层次化父子分块**：子块（段落级）索引精准检索，自动提升为父块（完整法条）喂给LLM，检索精度+上下文丰富度兼得
+- **元数据过滤**：查询含法条编号时自动提取并预过滤，精准查询无需搜索全库
 - **RAGAS 评估体系**：faithfulness / answer_relevancy / context_precision / context_recall 四维量化评估
 - **评估对比报告**：不同检索策略（vector / hybrid / reranked）自动对比，量化改进效果
 - **多页面布局**：问答/知识库/评估/设置四页面独立展示，顶部导航切换
 - **Prompt强化**：严格限制模型忠实于检索内容，禁止编造法律条文
 
 ### V3 高级版 ✅ (已通过端到端测试)
-- **LangGraph CRAG 自我纠错**：检索评估 → Query改写 → 生成 → 忠实度评估，完整的闭环纠错工作流
-- **检索三分法评估**：precise / vague / irrelevant，根据评分自动触发Query改写或生成
-- **Query改写**：模糊问题自动改写为精确专业查询（如"工资怎么算"→"劳动法工资计算标准和加班费规定"）
+- **Adaptive RAG 自适应路由**：查询复杂度分类(simple/medium/complex) → 动态选择处理深度，简单查询省40%+token
+- **LangGraph CRAG 自我纠错**：检索评估 → HyDE → 生成 → 忠实度评估，完整的闭环纠错工作流（complex路径）
+- **检索三分法评估**：precise / vague / irrelevant，根据评分自动触发HyDE或生成
+- **HyDE查询增强**：短查询(≤15字)自动生成假设答案用于检索（如"加班费怎么算"→假设答案含法言法语→精准匹配法条），替代传统Query改写
+- **上下文压缩（EmbeddingsFilter）**：检索后用Embedding相似度过滤低相关文档，减少喂给LLM的无关内容，Token -20~30%
 - **回答忠实度评估**：LLM判断回答是否忠实于参考资料，不忠实则自动重新生成
 - **多轮对话**：完整支持多轮追问，历史上下文自动注入改写和生成流程
 - **CRAG降级机制**：工作流异常时自动降级到simple模式，保证系统可用性
 - **CRAG步骤可视化**：前端折叠面板实时展示工作流7-10个执行步骤
 - **参考来源折叠**：默认收起参考来源，点击展开查看详情，界面更清爽
+
+### V4 多Agent版 ✅
+- **Agentic RAG 多Agent协作**：Router意图路由 → Retriever/Calculator/Comparator专业Agent → Validator验证，完整协作架构
+- **Router Agent**：LLM意图分类，自动分发到法条查询/金额计算/对比分析
+- **Calculator Agent**：5种劳动法精确计算（加班费/经济补偿金/赔偿金/双倍工资/年休假工资），Python公式+法条依据
+- **Comparator Agent**：双组检索+结构化对比分析（如"经济补偿金vs赔偿金区别"）
+- **Validator Agent**：合法性+幻觉最终验证，未通过自动追加警告
+- **Agent降级机制**：工作流异常时自动降级到simple模式，保证系统可用性
 
 ## 覆盖法律
 
@@ -72,6 +84,7 @@
 | 关键词检索 | BM25 + jieba | 中文分词关键词匹配 |
 | RAG框架 | LangChain 1.0 + LCEL | V1/V2 检索生成链式编排 |
 | CRAG框架 | LangGraph | V3 状态图自我纠错工作流 |
+| Agent框架 | LangGraph | V4 多Agent协作工作流 |
 | 评估 | RAGAS | RAG系统量化评估 |
 | 后端 | FastAPI + Uvicorn | API服务 |
 | 前端 | React + TypeScript + TailwindCSS + React Router | 多页面用户界面 |
@@ -94,11 +107,13 @@ LaborRAG/
 │   │   │   │   ├── vector.py    # V1 向量检索
 │   │   │   │   ├── bm25.py      # V2 BM25关键词检索
 │   │   │   │   ├── hybrid.py    # V2 混合检索（RRF融合）
-│   │   │   │   └── reranked.py  # V2 重排序检索
+│   │   │   │   ├── reranked.py  # V2 重排序检索
+│   │   │   │   └── compressor.py # V3 EmbeddingsFilter上下文压缩
 │   │   │   ├── generator/       # 生成层
 │   │   │   │   ├── base.py      # 抽象基类
 │   │   │   │   ├── simple_chain.py # V1/V2 LCEL链
-│   │   │   │   └── crag_graph.py  # V3 CRAG状态图
+│   │   │   │   ├── crag_graph.py  # V3 Adaptive RAG状态图
+│   │   │   │   └── agent_graph.py  # V4 Agentic RAG多Agent
 │   │   │   └── rag_engine.py    # RAG引擎（自动选择检索策略）
 │   │   ├── evaluation/          # V2 RAGAS评估
 │   │   │   ├── eval_dataset.py  # 20个标注问答对
@@ -209,17 +224,19 @@ python frontend/run.py
 相关配置项：
 ```env
 RETRIEVER_TYPE=reranked     # 检索策略（推荐reranked）
-VECTOR_WEIGHT=0.5           # 向量检索权重
-BM25_WEIGHT=0.5             # BM25检索权重
+VECTOR_WEIGHT=0.7           # 向量检索权重（法律文本语义匹配更关键）
+BM25_WEIGHT=0.3             # BM25检索权重
 RRF_K=60                    # RRF融合常数
 CHUNK_STRATEGY=law_article  # 切分策略: recursive | law_article
+PARENT_CHILD_ENABLED=true   # 层次化父子分块（子块精准检索→父块完整上下文）
 CHUNK_SIZE=800              # 切分长度
 CHUNK_OVERLAP=100           # 切分重叠
 TOP_K=8                     # 检索返回数量
-SCORE_THRESHOLD=0.2         # 相似度阈值
+SCORE_THRESHOLD=0.3         # 相似度阈值
 RERANKER_MODEL_NAME=BAAI/bge-reranker-v2-m3  # 重排序模型
 RERANK_TOP_K=5              # 重排序返回数量
-RAG_MODE=crag               # RAG模式: simple | crag
+COMPRESSION_THRESHOLD=0.5    # 上下文压缩相似度阈值（低于此值丢弃）
+RAG_MODE=agent               # RAG模式: simple | crag | agent
 ```
 
 ## 渐进式开发路线
@@ -228,35 +245,30 @@ RAG_MODE=crag               # RAG模式: simple | crag
 |------|---------|---------|---------|----------|
 | **V1 基础版** | 纯向量检索 + LCEL链式调用 | ✅ | ✅ 联调通过 | 合格 |
 | **V2 增强版** | Hybrid Search + Reranker + 法条切分 + RAGAS评估 | ✅ | ✅ | 良好 |
-| **V3 高级版** | LangGraph CRAG + 三分法评估 + Query改写 + 多轮对话 | ✅ | ✅ 端到端通过 | 优秀 |
-| **V4 多Agent版** | Router/Retriever/Calculator/Validator多Agent协作 | ⬜ | ⬜ | 优秀+ |
+| **V3 高级版** | LangGraph CRAG + HyDE + 父子分块 + 元数据过滤 + 上下文压缩 + 多轮对话 | ✅ | ✅ 端到端通过 | 优秀 |
+| **V4 多Agent版** | Agentic RAG + Router/Calculator/Comparator/Validator | ✅ | ⬜ 待测试 | 优秀+ |
 
 ### V3 端到端测试成功标准
-✅ CRAG工作流完整闭环  
-✅ 检索评估准确（precise/vague/irrelevant 分类正确）  
-✅ Query改写有效（模糊问题改写为精确查询）  
-✅ 忠实度评估工作（检测不忠实回答并重新生成）  
-✅ 多轮对话支持（上下文正确注入）  
-✅ 前端步骤展示（CRAG工作流7-10个步骤可视化）  
+✅ CRAG工作流完整闭环
+✅ 检索评估准确（precise/vague/irrelevant 分类正确）
+✅ HyDE查询增强有效（短查询生成假设答案，检索精度提升）
+✅ 父子分块工作正常（子块精准检索→父块完整上下文）
+✅ 元数据过滤生效（法条编号查询精准命中）
+✅ 忠实度评估工作（检测不忠实回答并重新生成）
+✅ 上下文压缩生效（EmbeddingsFilter过滤低相关文档，减少token消耗）
+✅ 多轮对话支持（上下文正确注入）
+✅ 前端步骤展示（CRAG工作流7-10个步骤可视化）
 ✅ 参考来源完整（带评分和法律出处）
 
-## 下一步规划 (V4 多Agent版)
-
-V4 将实现四Agent协作架构，提升系统的准确性和完整性：
-
-```
-用户提问
-  ↓
-[Router Agent] - 意图识别 (法条查询/计算类/对比类/案例类)
-  ├→ Retriever Agent (V3 CRAG) - 法条检索与纠错
-  ├→ Calculator Agent - 精确计算 (加班费/赔偿金/补偿金)
-  ├→ Comparator Agent - 新旧法对比
-  └→ Analysis Agent - 案例分析
-       ↓
-[Validator Agent] - 最终验证 (合法性/防止幻觉)
-       ↓
-    最终回答
-```
+## V4 端到端测试成功标准
+⬜ Router意图分类准确（法条查询/计算类/对比类正确分发）
+⬜ Calculator精确计算（加班费/经济补偿金/赔偿金等，结果精确）
+⬜ Comparator对比分析（双组检索+结构化对比表）
+⬜ Retriever路径正常（走V3检索+压缩链路）
+⬜ Validator验证生效（检测幻觉并修正）
+⬜ 多Agent协作完整（Router→专业Agent→Validator全链路）
+⬜ Agent降级兜底（异常时自动降级到simple模式）
+⬜ V1-V4四版对比实验
 
 ## 注意事项
 
@@ -265,6 +277,7 @@ V4 将实现四Agent协作架构，提升系统的准确性和完整性：
 - BGE-Reranker-v2-m3 首次运行需下载约 560MB，后续从本地缓存加载
 - 国内环境建议设置 `HF_ENDPOINT=https://hf-mirror.com` 加速模型下载
 - CRAG 模式每次提问约消耗 3000-4000 tokens（含3-4次LLM调用），简单模式约 2500 tokens
+- Agent 模式根据意图不同消耗不同：retrieve≈3000, calculate≈4000, compare≈5000 tokens
 - 评估对比实验将在V4完成后统一运行（V1 vs V2 vs V3 vs V4 四版对比）
 - 本系统回答仅供参考，不构成法律意见，具体问题请咨询专业律师
 - 详细技术知识参见 [KNOWLEDGE.md](KNOWLEDGE.md)

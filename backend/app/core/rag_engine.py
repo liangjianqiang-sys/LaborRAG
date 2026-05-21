@@ -1,5 +1,5 @@
+import traceback
 import uuid
-from typing import List, Optional
 from langchain_core.documents import Document
 
 from app.config import settings
@@ -30,13 +30,21 @@ class RAGEngine:
         self.retriever: BaseRetriever = self._create_retriever()
 
         # 根据RAG_MODE选择生成器
-        if settings.RAG_MODE == "crag":
-            from app.core.generator.crag_graph import CRAGGraph
-            self.crag_graph = CRAGGraph(self.retriever)
+        if settings.RAG_MODE == "agent":
+            from app.core.generator.agent_graph import AgenticRAGGraph
+            self.agent_graph = AgenticRAGGraph(self.retriever)
+            self.crag_graph = None
             self.generator: BaseGenerator = SimpleChainGenerator()  # fallback
-            print(f"   Generator: CRAG (self-corrective)")
+            print(f"   Generator: Agentic RAG (multi-agent)")
+        elif settings.RAG_MODE == "crag":
+            from app.core.generator.crag_graph import AdaptiveRAGGraph
+            self.crag_graph = AdaptiveRAGGraph(self.retriever)
+            self.agent_graph = None
+            self.generator: BaseGenerator = SimpleChainGenerator()  # fallback
+            print(f"   Generator: Adaptive RAG (complexity-based routing)")
         else:
             self.crag_graph = None
+            self.agent_graph = None
             self.generator: BaseGenerator = SimpleChainGenerator()
             print(f"   Generator: SimpleChain")
 
@@ -79,6 +87,12 @@ class RAGEngine:
 
     def initialize(self) -> bool:
         """初始化：尝试加载已有向量库，否则构建新的。"""
+        # 父子分块模式提示
+        if settings.PARENT_CHILD_ENABLED:
+            print("   Parent-Child Chunking: ENABLED (子块精准检索→父块完整上下文)")
+        else:
+            print("   Parent-Child Chunking: DISABLED (传统切分模式)")
+
         if self.vector_store_manager.load():
             print("Loaded existing vector store.")
             # 加载BM25索引（如果存在）
@@ -137,8 +151,20 @@ class RAGEngine:
         # 获取对话上下文
         conversation_context = conversation_manager.build_context_string(conversation_id)
 
-        if settings.RAG_MODE == "crag" and self.crag_graph:
-            # V3: CRAG自我纠错工作流（支持多轮对话上下文）
+        if settings.RAG_MODE == "agent" and self.agent_graph:
+            # V4: Agentic RAG多Agent协作
+            try:
+                result = self.agent_graph.run(request.question, conversation_context=conversation_context)
+                answer = result["answer"]
+                relevant_docs = result["context_docs"]
+                crag_steps = result.get("steps", [])
+                rewritten_question = result.get("intent", "")
+                rag_mode = "agent"
+            except Exception as e:
+                answer, relevant_docs, crag_steps, rewritten_question, rag_mode = \
+                    self._fallback_simple(request.question, f"Agent降级: {str(e)[:50]}", "agent_fallback")
+        elif settings.RAG_MODE == "crag" and self.crag_graph:
+            # V3: Adaptive RAG自适应工作流（支持多轮对话上下文）
             try:
                 result = self.crag_graph.run(request.question, conversation_context=conversation_context)
                 answer = result["answer"]
@@ -147,22 +173,8 @@ class RAGEngine:
                 rewritten_question = result.get("rewritten_question", "")
                 rag_mode = "crag"
             except Exception as e:
-                print(f"[CRAG] 工作流执行失败，降级到simple模式: {e}")
-                import traceback
-                traceback.print_exc()
-                # 降级到简单链路
-                relevant_docs = self.retriever.retrieve(
-                    query=request.question,
-                    k=settings.TOP_K,
-                    score_threshold=settings.SCORE_THRESHOLD,
-                )
-                answer = self.generator.generate(
-                    question=request.question,
-                    context_docs=relevant_docs,
-                )
-                crag_steps = [f"CRAG降级: {str(e)[:50]}"]
-                rewritten_question = ""
-                rag_mode = "crag_fallback"
+                answer, relevant_docs, crag_steps, rewritten_question, rag_mode = \
+                    self._fallback_simple(request.question, f"CRAG降级: {str(e)[:50]}", "crag_fallback")
         else:
             # V1/V2: 简单链路
             relevant_docs = self.retriever.retrieve(
@@ -200,6 +212,19 @@ class RAGEngine:
             crag_steps=crag_steps,
             rewritten_question=rewritten_question,
         )
+
+    def _fallback_simple(self, question: str, step_msg: str, rag_mode: str):
+        """工作流异常时降级到simple链路。"""
+        relevant_docs = self.retriever.retrieve(
+            query=question,
+            k=settings.TOP_K,
+            score_threshold=settings.SCORE_THRESHOLD,
+        )
+        answer = self.generator.generate(
+            question=question,
+            context_docs=relevant_docs,
+        )
+        return answer, relevant_docs, [step_msg], "", rag_mode
 
     def add_document(self, filepath: str) -> int:
         """添加单个文档到向量库。"""

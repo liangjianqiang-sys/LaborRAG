@@ -11,7 +11,7 @@ DATA_BASE_DIR = BASE_DIR / "data"
 
 class Settings:
     PROJECT_NAME: str = "LaborRAG - 劳动法智能问答系统"
-    VERSION: str = "1.0.0"
+    VERSION: str = "4.0.0"
     API_PREFIX: str = "/api/v1"
 
     # LLM配置
@@ -39,6 +39,9 @@ class Settings:
     CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "100"))
     CHUNK_STRATEGY: str = os.getenv("CHUNK_STRATEGY", "law_article")  # recursive | law_article
 
+    # 层次化父子分块配置
+    PARENT_CHILD_ENABLED: bool = os.getenv("PARENT_CHILD_ENABLED", "true").lower() == "true"
+
     # 检索配置
     RETRIEVER_TYPE: str = os.getenv("RETRIEVER_TYPE", "vector")  # vector | hybrid | reranked
     TOP_K: int = int(os.getenv("TOP_K", "8"))
@@ -53,8 +56,11 @@ class Settings:
     RERANKER_MODEL_NAME: str = os.getenv("RERANKER_MODEL_NAME", "BAAI/bge-reranker-v2-m3")
     RERANK_TOP_K: int = int(os.getenv("RERANK_TOP_K", "5"))          # 重排序后返回数量
 
-    # RAG模式配置 (V3)
-    RAG_MODE: str = os.getenv("RAG_MODE", "simple")  # simple | crag
+    # 上下文压缩配置 (V3)
+    COMPRESSION_THRESHOLD: float = float(os.getenv("COMPRESSION_THRESHOLD", "0.5"))  # EmbeddingsFilter相似度阈值
+
+    # RAG模式配置 (V3/V4)
+    RAG_MODE: str = os.getenv("RAG_MODE", "simple")  # simple | crag | agent
 
     # HuggingFace镜像源（国内加速）
     HF_ENDPOINT: str = os.getenv("HF_ENDPOINT", "https://huggingface.co")

@@ -59,22 +59,43 @@ class BM25Retriever(BaseRetriever):
             json.dump(data, f, ensure_ascii=False)
 
     def retrieve(
-        self, query: str, k: int = 5, score_threshold: float = 0.0
+        self, query: str, k: int = 5, score_threshold: float = 0.0,
+        filter_dict: dict = None
     ) -> List[Tuple[Document, float]]:
-        """BM25检索，返回(文档, 分数)列表。"""
+        """BM25检索，返回(文档, 分数)列表，支持元数据过滤。
+
+        Args:
+            query: 查询文本
+            k: 返回数量
+            score_threshold: 分数阈值
+            filter_dict: 元数据过滤条件，如 {"article": "第四十四条"}
+        """
         if not self.is_ready():
             return []
 
         tokenized_query = list(jieba.cut(query))
         scores = self.bm25.get_scores(tokenized_query)
 
-        # 获取Top-K结果
-        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
+        # 获取Top-K结果（扩大候选集以补偿过滤后的损失）
+        search_k = k * 3 if filter_dict else k
+        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:search_k]
         results = []
         for idx in top_indices:
             score = float(scores[idx])
-            if score >= score_threshold:
-                results.append((self.documents[idx], score))
+            if score < score_threshold:
+                continue
+            doc = self.documents[idx]
+            # 元数据过滤：检查文档的metadata是否匹配过滤条件
+            if filter_dict:
+                match = all(
+                    doc.metadata.get(key) == value
+                    for key, value in filter_dict.items()
+                )
+                if not match:
+                    continue
+            results.append((doc, score))
+            if len(results) >= k:
+                break
         return results
 
     def is_ready(self) -> bool:

@@ -33,7 +33,7 @@ class ChatResponse(BaseModel):
     answer: str = Field(..., description="AI回答")
     sources: list[SourceDocument] = Field(default_factory=list, description="参考来源")
     conversation_id: str = Field(..., description="会话ID")
-    rag_mode: str = Field("simple", description="RAG模式: simple | crag")
+    rag_mode: str = Field("simple", description="RAG模式: simple | crag | agent")
     crag_steps: list[str] = Field(default_factory=list, description="CRAG工作流步骤记录")
     rewritten_question: str = Field("", description="改写后的问题（CRAG模式）")
 
