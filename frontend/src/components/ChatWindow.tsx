@@ -15,6 +15,15 @@ interface Message {
   ragMode?: string
 }
 
+const SUGGESTED_QUESTIONS = [
+  { icon: '📄', text: '劳动合同法第47条怎么规定的？' },
+  { icon: '💰', text: '月薪8000加班10小时加班费多少？' },
+  { icon: '⚖️', text: '经济补偿金和赔偿金有什么区别？' },
+  { icon: '📋', text: '用人单位可以随时辞退员工吗？' },
+  { icon: '🧮', text: '工作5年被违法辞退赔偿金多少？' },
+  { icon: '🔍', text: '未签劳动合同有什么法律后果？' },
+]
+
 export default function ChatWindow() {
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
@@ -84,14 +93,29 @@ export default function ChatWindow() {
       {/* Messages Area */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
         {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-gray-400 space-y-3">
+          <div className="flex flex-col items-center justify-center h-full text-gray-400 space-y-4">
             <div className="w-16 h-16 rounded-full bg-emerald-50 flex items-center justify-center">
               <span className="text-2xl">⚖️</span>
             </div>
-            <p className="text-lg font-medium">劳动法智能问答系统</p>
+            <p className="text-lg font-medium text-gray-600">劳动法智能问答系统</p>
             <p className="text-sm">输入劳动法相关问题，我将基于法律条文为您解答</p>
-            <p className="text-xs text-blue-500 mt-1">V3 支持多轮对话，可连续追问</p>
-            <p className="text-xs text-amber-500 mt-2">⚠️ 本系统回答仅供参考，不构成法律意见，具体问题请咨询专业律师</p>
+            <div className="mt-2 space-y-2 w-full max-w-lg">
+              <p className="text-xs text-gray-400 text-center mb-2">💡 点击以下问题快速体验</p>
+              <div className="grid grid-cols-2 gap-2">
+                {SUGGESTED_QUESTIONS.map((q, i) => (
+                  <button
+                    key={i}
+                    onClick={() => handleSend(q.text)}
+                    className="flex items-start gap-2 p-3 rounded-lg border border-gray-200 bg-white hover:bg-emerald-50 hover:border-emerald-300 transition text-left group"
+                  >
+                    <span className="text-base flex-shrink-0">{q.icon}</span>
+                    <span className="text-xs text-gray-600 group-hover:text-emerald-700 leading-relaxed">{q.text}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <p className="text-xs text-blue-500 mt-1">支持多轮对话，可连续追问</p>
+            <p className="text-xs text-amber-500">⚠️ 本系统回答仅供参考，不构成法律意见，具体问题请咨询专业律师</p>
           </div>
         )}
 
@@ -104,9 +128,13 @@ export default function ChatWindow() {
                 msg.content
               )}
             </MessageBubble>
-            {/* CRAG步骤可视化 */}
+            {/* CRAG/Agent步骤可视化 */}
             {msg.role === 'assistant' && msg.cragSteps && msg.cragSteps.length > 0 && (
               <CragStepsPanel steps={msg.cragSteps} rewrittenQuestion={msg.rewrittenQuestion} />
+            )}
+            {/* 免责声明 */}
+            {msg.role === 'assistant' && (
+              <p className="text-xs text-amber-500 mt-1 ml-2">⚠️ 仅供参考，不构成法律意见</p>
             )}
           </div>
         ))}
@@ -127,11 +155,6 @@ export default function ChatWindow() {
         <div ref={bottomRef} />
       </div>
 
-      {/* Disclaimer */}
-      <div className="px-6 py-1.5 bg-amber-50 border-t border-amber-100">
-        <p className="text-xs text-amber-600 text-center">⚠️ 本系统回答仅供参考，不构成法律意见，具体问题请咨询专业律师</p>
-      </div>
-
       {/* Input Bar */}
       <InputBar onSend={handleSend} disabled={loading} />
     </div>
@@ -142,9 +165,13 @@ function CragStepsPanel({ steps, rewrittenQuestion }: { steps: string[]; rewritt
   const [expanded, setExpanded] = useState(false)
 
   const stepIcon = (step: string) => {
+    if (step.includes('意图路由')) return '🧭'
     if (step.includes('检索')) return '🔍'
     if (step.includes('评估检索')) return '📋'
     if (step.includes('改写')) return '✏️'
+    if (step.includes('计算')) return '🧮'
+    if (step.includes('对比')) return '⚖️'
+    if (step.includes('验证')) return '✅'
     if (step.includes('生成')) return '💬'
     if (step.includes('评估回答')) return '✅'
     return '→'
@@ -157,7 +184,7 @@ function CragStepsPanel({ steps, rewrittenQuestion }: { steps: string[]; rewritt
         className="flex items-center gap-1.5 text-xs text-blue-500 hover:text-blue-700 transition"
       >
         <Zap size={12} />
-        <span className="font-medium">CRAG 工作流</span>
+        <span className="font-medium">RAG 工作流</span>
         <span className="text-gray-400">({steps.length}步)</span>
         {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
       </button>

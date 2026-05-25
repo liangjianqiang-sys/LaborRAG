@@ -50,9 +50,11 @@ class AgentState(TypedDict, total=False):
 INTENT_ROUTER_PROMPT = """你是劳动法问答系统的意图路由器，判断用户问题属于哪类，只输出一个词。
 
 定义：
-1. retrieve：纯法条查询，只需检索法律条文（如"劳动合同法第44条"、"什么是经济补偿"）
-2. calculate：涉及金额计算，需要检索法条+精确计算（如"月薪8000加班10小时加班费多少"、"工作5年赔偿金多少"）
+1. retrieve：法条查询或规则说明，只需检索法律条文（如"劳动合同法第44条"、"什么是经济补偿"、"加班工资怎么算"、"经济补偿金的计算标准"）
+2. calculate：用户给出了具体数字，需要精确计算金额（如"月薪8000加班10小时加班费多少"、"工作5年赔偿金多少"）。注意：如果只是问计算方法/规则而没有具体数字，应归为retrieve
 3. compare：对比分析，需要检索并对比不同法条/概念（如"经济补偿金和赔偿金有什么区别"、"固定期限和无固定期限合同区别"）
+
+关键区分：问"怎么算/标准/规定"=retrieve，给了具体数字要"算多少"=calculate
 
 对话上下文：{conversation_context}
 用户问题：{question}
@@ -66,6 +68,9 @@ CALCULATOR_PROMPT = """你是劳动法律师助手，基于以下法条和计算
 2. 代入具体数值计算
 3. 给出最终金额（保留2位小数）
 4. 如果计算结果与法条不符，以法条为准
+5. 只引用参考资料中明确出现的法条，禁止编造或凭记忆补充
+6. 不要添加参考资料之外的法律知识
+7. 不要添加"建议咨询律师"等与参考资料无关的总结性套话
 
 参考资料：
 {context}
@@ -77,6 +82,11 @@ CALCULATOR_PROMPT = """你是劳动法律师助手，基于以下法条和计算
 回答："""
 
 COMPARATOR_PROMPT = """你是劳动法律师助手，基于以下两组法条进行对比分析。
+
+规则：
+1. 只引用下方资料中明确出现的法条，禁止编造或凭记忆补充
+2. 不要添加资料之外的法律知识
+3. 不要添加"建议咨询律师"等与资料无关的总结性套话
 
 第一组（概念A）：
 {context_a}
@@ -98,8 +108,9 @@ VALIDATOR_PROMPT = """你是劳动法回答质量验证专家，检查回答是�
 
 检查维度：
 1. 法条引用是否真实存在（不能编造法条编号）
-2. 计算公式是否符合法律规定
-3. 回答是否与参考资料矛盾
+2. 引用的法条是否确实出现在上方参考资料中（不能引用资料未包含的法条）
+3. 计算公式是否符合法律规定
+4. 回答是否与参考资料矛盾
 
 参考资料：
 {context}
@@ -116,8 +127,8 @@ AI回答：{answer}
 
 MONTHLY_WORK_DAYS = 21.75    # 月计薪天数
 DAILY_WORK_HOURS = 8         # 日标准工时
-VALIDATE_CONTEXT_CHARS = 300 # 验证时上下文截断字数
-VALIDATE_ANSWER_CHARS = 800  # 验证时回答截断字数
+VALIDATE_CONTEXT_CHARS = 800 # 验证时上下文截断字数
+VALIDATE_ANSWER_CHARS = 1200  # 验证时回答截断字数
 
 LABOR_CALCULATORS = {
     "加班费": {
@@ -209,79 +220,138 @@ def calculate_damage_pay(monthly_salary: float, years: float) -> dict:
     }
 
 
-def auto_calculate(question: str) -> str:
+def _first_match(patterns: list, text: str) -> float:
+    """按顺序尝试多个正则，返回第一个匹配的数值。"""
+    for pat in patterns:
+        m = re.search(pat, text)
+        if m:
+            return float(m.group(1).replace(",", ""))
+    return 0.0
+
+
+def _parse_cn_salary(text: str) -> float:
+    """解析中文薪资表达，如"1万5"→15000。"""
+    m = re.search(r"(\d+)万(\d*[千百]?)", text)
+    if not m:
+        return 0.0
+    wan = float(m.group(1))
+    rest_str = m.group(2)
+    if not rest_str:
+        return wan * 10000
+    if "千" in rest_str:
+        return wan * 10000 + float(rest_str.replace("千", "")) * 1000
+    if "百" in rest_str:
+        return wan * 10000 + float(rest_str.replace("百", "")) * 100
+    return wan * 10000 + float(rest_str) * 1000
+
+
+def auto_calculate(question: str, conversation_context: str = "") -> str:
     """根据问题自动识别计算类型并执行计算。
 
     尝试从问题中提取月薪、年限、小时数等参数。
+    当追问缺少关键词时，从对话上下文继承计算类型和缺失参数。
     """
-    # 提取月薪
-    salary = 0.0
-    salary_match = re.search(r"月薪[为约]?(\d+[,.]?\d*)", question)
-    if not salary_match:
-        salary_match = re.search(r"工资[为约]?(\d+[,.]?\d*)", question)
-    if not salary_match:
-        salary_match = re.search(r"(\d+[,.]?\d*)元[/月]", question)
-    if salary_match:
-        salary = float(salary_match.group(1).replace(",", ""))
+    combined = f"{conversation_context}\n{question}" if conversation_context else question
 
-    # 提取年限
-    years = 0.0
-    years_match = re.search(r"工作[了为约]?(\d+\.?\d*)年", question)
-    if not years_match:
-        years_match = re.search(r"(\d+\.?\d*)年", question)
-    if years_match:
-        years = float(years_match.group(1))
+    # 提取月薪：优先当前问题，其次上下文，最后中文表达
+    salary = _first_match(
+        [r"月薪[为约]?(\d+[,.]?\d*)", r"工资[为约]?(\d+[,.]?\d*)", r"(\d+[,.]?\d*)元[/月]"],
+        question,
+    ) or _first_match([r"月薪[为约]?(\d+[,.]?\d*)"], combined) or _parse_cn_salary(question)
 
-    # 提取加班小时
-    hours = 0.0
-    hours_match = re.search(r"加班[了为约]?(\d+\.?\d*)小时", question)
-    if not hours_match:
-        hours_match = re.search(r"(\d+\.?\d*)小时", question)
-    if hours_match:
-        hours = float(hours_match.group(1))
+    # 提取年限：优先当前问题，其次上下文
+    years = _first_match(
+        [r"工作[了为约]?(\d+\.?\d*)年", r"(\d+\.?\d*)年"],
+        question,
+    ) or (conversation_context and _first_match([r"工作[了为约]?(\d+\.?\d*)年"], combined))
+
+    # 提取加班小时：优先当前问题，其次上下文
+    hours = _first_match(
+        [r"加班[了为约]?(\d+\.?\d*)小时", r"(\d+\.?\d*)小时"],
+        question,
+    ) or (conversation_context and _first_match([r"加班[了为约]?(\d+\.?\d*)小时"], combined))
 
     # 判断加班类型
     rate_type = "工作日延时"
-    if "休息日" in question or "周末" in question:
+    if "休息日" in combined or "周末" in combined:
         rate_type = "休息日加班"
-    elif "法定节假日" in question or "节假日" in question or "国庆" in question or "春节" in question:
+    elif "法定节假日" in combined or "节假日" in combined or "国庆" in combined or "春节" in combined:
         rate_type = "法定节假日"
 
+    # 从上下文继承计算类型关键词
+    has_overtime = "加班" in combined or "延时" in combined
+    has_severance = "经济补偿" in combined or "补偿金" in combined
+    has_damage = "赔偿金" in combined or "违法解除" in combined or "违法辞退" in combined
+
     results = []
+    missing = []
 
     # 加班费计算
-    if ("加班" in question or "延时" in question) and salary > 0 and hours > 0:
-        r = calculate_overtime_pay(salary, hours, rate_type)
-        results.append(
-            f"【{r['type']}】\n"
-            f"  法条依据：{r['law_ref']}\n"
-            f"  计算公式：{r['formula']}\n"
-            f"  月薪：{r['monthly_salary']}元 → 时薪：{r['hourly_wage']}元\n"
-            f"  加班{r['overtime_hours']}小时 × {r['rate']}倍({r['rate_type']})\n"
-            f"  ➜ 加班费 = {r['result']}元"
-        )
+    if has_overtime:
+        if salary > 0 and hours > 0:
+            r = calculate_overtime_pay(salary, hours, rate_type)
+            results.append(
+                f"【{r['type']}】\n"
+                f"  法条依据：{r['law_ref']}\n"
+                f"  计算公式：{r['formula']}\n"
+                f"  月薪：{r['monthly_salary']}元 → 时薪：{r['hourly_wage']}元\n"
+                f"  加班{r['overtime_hours']}小时 × {r['rate']}倍({r['rate_type']})\n"
+                f"  ➜ 加班费 = {r['result']}元"
+            )
+        else:
+            if salary == 0: missing.append("月薪")
+            if hours == 0: missing.append("加班小时数")
+            results.append(
+                f"【加班费】\n"
+                f"  法条依据：{LABOR_CALCULATORS['加班费']['law_ref']}\n"
+                f"  计算公式：{LABOR_CALCULATORS['加班费']['formula']}\n"
+                f"  ⚠️ 缺少参数：{', '.join(missing)}，无法计算具体金额"
+            )
+            missing.clear()
 
     # 经济补偿金
-    if ("经济补偿" in question or "补偿金" in question) and salary > 0 and years > 0:
-        r = calculate_severance_pay(salary, years)
-        results.append(
-            f"【{r['type']}】\n"
-            f"  法条依据：{r['law_ref']}\n"
-            f"  计算公式：{r['formula']}\n"
-            f"  月薪：{r['monthly_salary']}元 × {r['compensation_months']}个月\n"
-            f"  ➜ 经济补偿金 = {r['result']}元"
-        )
+    if has_severance:
+        if salary > 0 and years > 0:
+            r = calculate_severance_pay(salary, years)
+            results.append(
+                f"【{r['type']}】\n"
+                f"  法条依据：{r['law_ref']}\n"
+                f"  计算公式：{r['formula']}\n"
+                f"  月薪：{r['monthly_salary']}元 × {r['compensation_months']}个月\n"
+                f"  ➜ 经济补偿金 = {r['result']}元"
+            )
+        else:
+            if salary == 0: missing.append("月薪")
+            if years == 0: missing.append("工作年限")
+            results.append(
+                f"【经济补偿金】\n"
+                f"  法条依据：{LABOR_CALCULATORS['经济补偿金']['law_ref']}\n"
+                f"  计算公式：{LABOR_CALCULATORS['经济补偿金']['formula']}\n"
+                f"  ⚠️ 缺少参数：{', '.join(missing)}，无法计算具体金额"
+            )
+            missing.clear()
 
     # 赔偿金
-    if ("赔偿金" in question or "违法解除" in question or "违法辞退" in question) and salary > 0 and years > 0:
-        r = calculate_damage_pay(salary, years)
-        results.append(
-            f"【{r['type']}】\n"
-            f"  法条依据：{r['law_ref']}\n"
-            f"  计算公式：{r['formula']}\n"
-            f"  经济补偿金基数：{r['severance_base']}元 × 2倍\n"
-            f"  ➜ 赔偿金 = {r['result']}元"
-        )
+    if has_damage:
+        if salary > 0 and years > 0:
+            r = calculate_damage_pay(salary, years)
+            results.append(
+                f"【{r['type']}】\n"
+                f"  法条依据：{r['law_ref']}\n"
+                f"  计算公式：{r['formula']}\n"
+                f"  经济补偿金基数：{r['severance_base']}元 × 2倍\n"
+                f"  ➜ 赔偿金 = {r['result']}元"
+            )
+        else:
+            if salary == 0: missing.append("月薪")
+            if years == 0: missing.append("工作年限")
+            results.append(
+                f"【赔偿金】\n"
+                f"  法条依据：{LABOR_CALCULATORS['赔偿金']['law_ref']}\n"
+                f"  计算公式：{LABOR_CALCULATORS['赔偿金']['formula']}\n"
+                f"  ⚠️ 缺少参数：{', '.join(missing)}，无法计算具体金额"
+            )
+            missing.clear()
 
     if not results:
         return "未能识别计算类型或缺少必要参数（月薪/年限/小时数）。"
@@ -421,10 +491,11 @@ class AgenticRAGGraph:
         """Calculator Agent：检索法条 + 精确计算。"""
         print(f"[Agent] 🧮 计算Agent执行...")
         question = state["question"]
+        conversation_context = state.get("conversation_context", "")
         docs = state.get("context_docs", [])
 
-        # 执行自动计算
-        calc_result = auto_calculate(question)
+        # 执行自动计算（传入上下文以继承缺失参数）
+        calc_result = auto_calculate(question, conversation_context)
         print(f"[Agent] 🧮 计算结果: {calc_result[:100]}...")
 
         # 拼接法条上下文
@@ -475,8 +546,13 @@ class AgenticRAGGraph:
         context = self._format_docs(docs, fallback="未找到相关参考资料。")
 
         prompt = ChatPromptTemplate.from_template(
-            "你是劳动法律师助手。基于以下参考资料回答问题，规则："
-            "只引用资料中有的法条，标明出处；无相关内容则说明\"现有资料无法回答\"。\n\n"
+            "你是劳动法律师助手。你必须严格基于以下参考资料回答问题。\n\n"
+            "【重要规则】\n"
+            "1. 只引用参考资料中明确出现的法条，标明出处；禁止编造或凭记忆补充法条\n"
+            "2. 如果参考资料中没有相关信息，必须说明\"根据现有资料无法回答\"\n"
+            "3. 引用法律条文时，该条文必须出现在参考资料中，不能引用资料未包含的法条\n"
+            "4. 不要添加参考资料之外的法律知识\n"
+            "5. 不要添加\"建议咨询律师\"等与参考资料无关的总结性套话\n\n"
             "对话上下文：{conversation_context}\n\n"
             "参考资料：\n{context}\n\n"
             "问题：{question}\n\n回答："

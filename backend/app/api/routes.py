@@ -1,6 +1,7 @@
 import os
-import shutil
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
+import traceback
+import threading
+from fastapi import APIRouter, UploadFile, File, HTTPException
 from app.config import settings
 from app.models.schemas import (
     ChatRequest,
@@ -10,11 +11,23 @@ from app.models.schemas import (
     BuildRequest,
 )
 from app.core.rag_engine import RAGEngine
+from app.evaluation.utils import sanitize_floats
+
+# 支持的文档扩展名
+SUPPORTED_EXT = {".pdf", ".docx", ".txt", ".md"}
 
 router = APIRouter()
 
 # RAG引擎实例（由main.py注入）
 engine: RAGEngine = None
+
+# 评估任务状态
+_eval_status = {
+    "running": False,
+    "progress": "",
+    "result": None,
+    "error": None,
+}
 
 
 def set_engine(rag_engine: RAGEngine):
@@ -38,7 +51,6 @@ def chat(request: ChatRequest):
     try:
         return engine.chat(request)
     except Exception as e:
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -59,10 +71,9 @@ async def knowledge_base_status():
     # 统计数据目录中的文件
     total_documents = 0
     if os.path.exists(settings.DATA_DIR):
-        supported_ext = {".pdf", ".docx", ".txt", ".md"}
         total_documents = sum(
             1 for f in os.listdir(settings.DATA_DIR)
-            if os.path.splitext(f)[1].lower() in supported_ext
+            if os.path.splitext(f)[1].lower() in SUPPORTED_EXT
         )
 
     return KnowledgeBaseStatus(
@@ -95,13 +106,12 @@ def build_knowledge_base(request: BuildRequest = None):
 @router.post("/documents/upload", response_model=UploadResponse)
 async def upload_document(file: UploadFile = File(...)):
     """上传文档到数据目录并自动加入向量库。"""
-    supported_ext = {".pdf", ".docx", ".txt", ".md"}
     ext = os.path.splitext(file.filename)[1].lower()
 
-    if ext not in supported_ext:
+    if ext not in SUPPORTED_EXT:
         raise HTTPException(
             status_code=400,
-            detail=f"不支持的文件类型: {ext}，支持: {supported_ext}",
+            detail=f"不支持的文件类型: {ext}，支持: {SUPPORTED_EXT}",
         )
 
     # 保存文件到数据目录
@@ -128,13 +138,12 @@ async def upload_document(file: UploadFile = File(...)):
 @router.get("/documents/list")
 async def list_documents():
     """列出数据目录中的所有文档。"""
-    supported_ext = {".pdf", ".docx", ".txt", ".md"}
     documents = []
 
     if os.path.exists(settings.DATA_DIR):
         for filename in os.listdir(settings.DATA_DIR):
             ext = os.path.splitext(filename)[1].lower()
-            if ext in supported_ext:
+            if ext in SUPPORTED_EXT:
                 filepath = os.path.join(settings.DATA_DIR, filename)
                 documents.append({
                     "filename": filename,
@@ -158,39 +167,158 @@ def delete_document(filename: str):
 
 # ==================== V2 评估接口 ====================
 
-@router.post("/evaluation/run")
-async def run_evaluation(background_tasks: BackgroundTasks, sample_count: int = None):
-    """运行RAGAS评估（后台执行）。"""
-    if not engine or not engine.is_ready:
-        raise HTTPException(status_code=503, detail="知识库未就绪")
-
+def _run_eval_task(sample_count, rag_mode, question_type):
+    """后台线程执行评估。"""
     from app.evaluation.eval_runner import EvalRunner
     from app.evaluation.eval_report import EvalReport
 
-    runner = EvalRunner(engine)
-    report = EvalReport()
+    _eval_status["running"] = True
+    _eval_status["progress"] = "评估进行中..."
+    _eval_status["result"] = None
+    _eval_status["error"] = None
 
-    # 同步运行（评估本身需要时间）
     try:
-        result = runner.run(sample_count=sample_count)
-        filepath = report.save_result(settings.RETRIEVER_TYPE, result)
-        return {
-            "message": "评估完成",
-            "retriever_type": settings.RETRIEVER_TYPE,
-            "scores": result["scores"],
-            "sample_count": result["sample_count"],
-            "report_path": filepath,
-        }
+        result = EvalRunner(engine).run(sample_count=sample_count, rag_mode=rag_mode, question_type=question_type)
+        filepath = EvalReport().save_result(result["rag_mode"], result)
+        _eval_status["result"] = {"message": "评估完成", "report_path": filepath, **result}
+        _eval_status["progress"] = "评估完成"
     except Exception as e:
-        import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"评估失败: {str(e)}")
+        _eval_status["error"] = str(e)
+        _eval_status["progress"] = f"评估失败: {str(e)}"
+    finally:
+        _eval_status["running"] = False
+
+
+@router.post("/evaluation/run")
+async def run_evaluation(sample_count: int = None, rag_mode: str = None, question_type: str = None):
+    """启动RAGAS评估（后台异步执行）。"""
+    if not engine or not engine.is_ready:
+        raise HTTPException(status_code=503, detail="知识库未就绪")
+    if _eval_status["running"]:
+        raise HTTPException(status_code=409, detail="评估正在进行中")
+
+    thread = threading.Thread(
+        target=_run_eval_task,
+        args=(sample_count, rag_mode, question_type),
+        daemon=True,
+    )
+    thread.start()
+    return {"message": "评估已启动", "status": "running"}
+
+
+@router.get("/evaluation/status")
+async def get_evaluation_status():
+    """查询评估任务状态。"""
+    return sanitize_floats(_eval_status)
 
 
 @router.get("/evaluation/report")
 async def get_evaluation_report():
-    """获取评估对比报告。"""
+    """获取评估对比报告（三维度：三元组 + 检索 + 响应）。"""
     from app.evaluation.eval_report import EvalReport
     report = EvalReport()
-    comparison = report.compare()
-    return comparison
+    return sanitize_floats(report.compare())
+
+
+@router.get("/evaluation/observability")
+async def get_observability():
+    """可观测性三维度概览（检索质量 / 生成质量 / 业务指标）。"""
+    from app.evaluation.eval_report import EvalReport
+    report = EvalReport()
+    return sanitize_floats(report.get_observability())
+
+
+@router.get("/evaluation/bad-cases")
+async def get_bad_cases(top_n: int = 5):
+    """获取得分最低的Bad Case列表。"""
+    from app.evaluation.eval_report import EvalReport
+    report = EvalReport()
+    return sanitize_floats(report.get_bad_cases(top_n=top_n))
+
+
+# ==================== V3 断点续评接口 ====================
+
+_persistent_manager = None
+
+
+def _get_persistent_manager():
+    """懒初始化持久化评估管理器。"""
+    global _persistent_manager
+    if _persistent_manager is None:
+        from app.evaluation.eval_persistent import PersistentEvalManager
+        _persistent_manager = PersistentEvalManager(engine)
+    _persistent_manager.rag_engine = engine
+    return _persistent_manager
+
+
+def _require_engine():
+    """校验引擎就绪，否则抛503。"""
+    if not engine or not engine.is_ready:
+        raise HTTPException(status_code=503, detail="知识库未就绪")
+
+
+def _run_persistent_action(action, task_id: str, msg: str):
+    """执行持久化评估动作，统一校验+异常处理。"""
+    _require_engine()
+    try:
+        action(task_id)
+        return {"task_id": task_id, "message": msg, "status": "running"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/evaluation/persistent/create")
+async def create_persistent_task(
+    rag_mode: str = None,
+    sample_count: int = None,
+    question_type: str = None,
+):
+    """创建断点续评任务（不立即执行）。"""
+    _require_engine()
+    task_id = _get_persistent_manager().create_task(
+        rag_mode=rag_mode, sample_count=sample_count, question_type=question_type,
+    )
+    return {"task_id": task_id, "message": "任务已创建"}
+
+
+@router.post("/evaluation/persistent/start")
+async def start_persistent_task(task_id: str):
+    """首次启动评估任务（后台异步）。"""
+    return _run_persistent_action(_get_persistent_manager().start, task_id, "评估已启动")
+
+
+@router.post("/evaluation/persistent/resume")
+async def resume_persistent_task(task_id: str):
+    """断点续评：从上次中断处继续。"""
+    return _run_persistent_action(_get_persistent_manager().resume, task_id, "续评已启动")
+
+
+@router.post("/evaluation/persistent/restart")
+async def restart_persistent_task(task_id: str):
+    """重新评估：清空缓存，从头开始。"""
+    return _run_persistent_action(_get_persistent_manager().restart, task_id, "重新评估已启动")
+
+
+@router.post("/evaluation/persistent/retry-failed")
+async def retry_failed_persistent_task(task_id: str):
+    """仅重试之前失败的题目。"""
+    return _run_persistent_action(_get_persistent_manager().retry_failed, task_id, "失败条目重试已启动")
+
+
+@router.get("/evaluation/persistent/tasks")
+async def list_persistent_tasks():
+    """列出所有断点续评任务。"""
+    return {"tasks": sanitize_floats(_get_persistent_manager().list_tasks())}
+
+
+@router.get("/evaluation/persistent/progress")
+async def get_persistent_progress(task_id: str):
+    """获取任务进度。"""
+    return sanitize_floats(_get_persistent_manager().get_task_progress(task_id))
+
+
+@router.get("/evaluation/persistent/report")
+async def get_persistent_report(task_id: str):
+    """获取/生成任务评估报告。"""
+    return sanitize_floats(_get_persistent_manager().get_report(task_id))

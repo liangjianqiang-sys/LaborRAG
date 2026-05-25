@@ -14,12 +14,17 @@ class Settings:
     VERSION: str = "4.0.0"
     API_PREFIX: str = "/api/v1"
 
-    # LLM配置
+    # LLM配置（生成用）
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
     LLM_API_BASE: str = os.getenv("LLM_API_BASE", "https://api.deepseek.com/v1")
     LLM_MODEL_NAME: str = os.getenv("LLM_MODEL_NAME", "deepseek-chat")
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.1"))
     LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "2048"))
+
+    # LLM配置（评估用，可与生成用不同模型）
+    EVAL_LLM_API_KEY: str = os.getenv("EVAL_LLM_API_KEY", "") or os.getenv("LLM_API_KEY", "")
+    EVAL_LLM_API_BASE: str = os.getenv("EVAL_LLM_API_BASE", "") or os.getenv("LLM_API_BASE", "https://api.deepseek.com/v1")
+    EVAL_LLM_MODEL_NAME: str = os.getenv("EVAL_LLM_MODEL_NAME", "") or os.getenv("LLM_MODEL_NAME", "deepseek-chat")
 
     # Embedding配置
     EMBEDDING_MODEL_NAME: str = os.getenv(

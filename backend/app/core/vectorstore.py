@@ -13,19 +13,81 @@ from app.core.text_splitter import LawArticleSplitter
 # 匹配法条编号的正则，如 "第四十四条"、"第31条"
 _ARTICLE_REF_PATTERN = re.compile(r"第[一二三四五六七八九十百千\d]+条")
 
+# 法律名称 → 文件名映射
+_LAW_NAME_MAP = {
+    "劳动合同法": "劳动合同法.txt",
+    "劳动法": "劳动法.txt",
+    "劳动争议调解仲裁法": "劳动争议调解仲裁法.txt",
+    "工伤保险条例": "工伤保险条例.txt",
+    "社会保险法": "社会保险法.txt",
+    "职工带薪年休假条例": "职工带薪年休假条例.txt",
+}
+
+# 匹配法律名称的正则
+_LAW_NAME_PATTERN = re.compile("|".join(_LAW_NAME_MAP.keys()))
+
+# 阿拉伯数字 → 中文数字映射
+_DIGIT_TO_CN = {
+    0: "零", 1: "一", 2: "二", 3: "三", 4: "四", 5: "五",
+    6: "六", 7: "七", 8: "八", 9: "九", 10: "十",
+}
+
+
+def _int_to_cn(num: int) -> str:
+    """将整数转为中文数字（1-999）。"""
+    if num <= 10:
+        return _DIGIT_TO_CN[num]
+    if num < 20:
+        return "十" + (_DIGIT_TO_CN[num - 10] if num > 10 else "")
+    if num < 100:
+        tens, ones = divmod(num, 10)
+        return _DIGIT_TO_CN[tens] + "十" + (_DIGIT_TO_CN[ones] if ones else "")
+    if num < 1000:
+        hundreds, rest = divmod(num, 100)
+        cn = _DIGIT_TO_CN[hundreds] + "百"
+        if rest:
+            cn += _int_to_cn(rest)
+        return cn
+    return str(num)
+
+
+def _normalize_article_num(article: str) -> str:
+    """将法条编号中的阿拉伯数字转为中文数字，与元数据格式统一。
+
+    "第47条" → "第四十七条"，"第四十七条" → 不变。
+    """
+    match = re.search(r"第(\d+)条", article)
+    if not match:
+        return article
+    cn = _int_to_cn(int(match.group(1)))
+    return f"第{cn}条"
+
 
 def extract_article_ref(query: str) -> Optional[dict]:
-    """从查询中提取法条编号，返回元数据过滤条件。
+    """从查询中提取法条编号和法律名称，返回元数据过滤条件。
+
+    自动将阿拉伯数字转为中文数字，与向量库元数据格式统一。
+    同时提取法律名称用于source过滤，避免不同法律同一条号混淆。
 
     示例：
+        "劳动合同法第47条" → {"article": "第四十七条", "source": "劳动合同法.txt"}
         "第四十四条怎么规定的" → {"article": "第四十四条"}
-        "第31条的内容是什么" → {"article": "第31条"}
         "加班费怎么算" → None（无法条编号）
     """
     match = _ARTICLE_REF_PATTERN.search(query)
-    if match:
-        return {"article": match.group()}
-    return None
+    if not match:
+        return None
+
+    article = _normalize_article_num(match.group())
+    filter_dict = {"article": article}
+
+    # 提取法律名称，避免不同法律同一条号混淆
+    law_match = _LAW_NAME_PATTERN.search(query)
+    if law_match:
+        law_name = law_match.group()
+        filter_dict["source"] = _LAW_NAME_MAP[law_name]
+
+    return filter_dict
 
 
 class VectorStoreManager:
@@ -112,11 +174,14 @@ class VectorStoreManager:
     ) -> List[Tuple[Document, float]]:
         """带分数的相似度检索，支持元数据过滤。
 
+        当filter指定了article时，优先从parent_store精确查找，
+        避免语义检索对法条编号匹配不准的问题。
+
         Args:
             query: 查询文本
             k: 返回数量，None时使用配置默认值
             score_threshold: 分数阈值，None时使用配置默认值
-            filter_dict: 元数据过滤条件，如 {"article": "第四十四条"}
+            filter_dict: 元数据过滤条件，如 {"article": "第四十七条", "source": "劳动合同法.txt"}
         """
         if self.vector_store is None:
             return []
@@ -126,17 +191,40 @@ class VectorStoreManager:
         if score_threshold is None:
             score_threshold = settings.SCORE_THRESHOLD
 
-        # FAISS返回的是L2距离，需要转换为相似度分数
-        # 距离越小越相似，转换为0-1的分数：score = 1 / (1 + distance)
+        # 当filter指定了article，优先从parent_store精确查找
+        if filter_dict and "article" in filter_dict and self.parent_store:
+            exact_results = self._exact_lookup(filter_dict, k)
+            if exact_results:
+                return exact_results
+
+        # 语义检索 + Python层过滤
+        fetch_k = k * 5 if filter_dict else k
         raw_results = self.vector_store.similarity_search_with_score(
-            query, k=k, filter=filter_dict
+            query, k=fetch_k
         )
         results = []
         for doc, distance in raw_results:
+            if filter_dict:
+                match = all(
+                    doc.metadata.get(key) == value
+                    for key, value in filter_dict.items()
+                )
+                if not match:
+                    continue
             score = 1.0 / (1.0 + distance)
             if score >= score_threshold:
                 results.append((doc, score))
+            if len(results) >= k:
+                break
         return results
+
+    def _exact_lookup(self, filter_dict: dict, k: int) -> List[Tuple[Document, float]]:
+        """从parent_store精确查找匹配的父块，未找到返回空列表。"""
+        return [
+            (doc, 1.0)
+            for doc in self.parent_store.values()
+            if all(doc.metadata.get(key) == value for key, value in filter_dict.items())
+        ][:k]
 
     def promote_children_to_parents(
         self, results: List[Tuple[Document, float]]
@@ -159,18 +247,14 @@ class VectorStoreManager:
         other_results: List[Tuple[Document, float]] = []
 
         for doc, score in results:
-            chunk_type = doc.metadata.get("chunk_type", "")
-            if chunk_type == "child":
+            if doc.metadata.get("chunk_type") == "child":
                 parent_id = doc.metadata.get("parent_id", "")
                 if parent_id and parent_id in self.parent_store:
-                    # 记录该父块的最高分数
                     if parent_id not in parent_best or score > parent_best[parent_id]:
                         parent_best[parent_id] = score
                 else:
-                    # 子块找不到父块，保留原样
                     other_results.append((doc, score))
             else:
-                # 非子块文档直接保留
                 other_results.append((doc, score))
 
         # 构建父块结果列表

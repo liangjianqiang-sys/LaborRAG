@@ -5,8 +5,8 @@ description: 开发进度追踪 - 记录当前完成状态，对话丢失后快�
 # LaborRAG 开发进度
 
 ## 当前版本: V4 Agentic RAG多Agent版
-## 当前阶段: V4 核心代码完成，待端到端测试
-## 最后更新: 2026-05-20
+## 当前阶段: V4 核心代码完成 + 评估系统完善，待端到端测试
+## 最后更新: 2026-05-23
 
 ---
 
@@ -28,14 +28,14 @@ description: 开发进度追踪 - 记录当前完成状态，对话丢失后快�
 | 阶段1: Hybrid Search | ✅ 已完成 | bm25.py + hybrid.py + RRF融合 |
 | 阶段2: Reranker重排序 | ✅ 已完成 | reranked.py + BGE-Reranker-v2-m3 |
 | 阶段3: 法条结构化切分 | ✅ 已完成 | text_splitter.py + LawArticleSplitter |
-| 阶段4: RAGAS评估体系 | ✅ 已完成 | eval_dataset + eval_runner + eval_report + API |
-| 阶段5: 对比实验 | ⬜ 待测试 | 需运行三组对比(vector/hybrid/reranked) |
+| 阶段4: RAGAS评估体系 | ✅ 已完成 | eval_dataset(24题+question_type) + eval_runner(支持rag_mode/分类型统计) + eval_report + API |
+| 阶段5: 对比实验 | ⬜ 待测试 | 需运行四组对比(vector/reranked/crag/agent) |
 | 阶段6: 前端更新 | ✅ 已完成 | EvalPanel + 评估API |
 | 阶段7: 前端重构 | ✅ 已完成 | 多页面布局(问答/知识库/评估/设置) + React Router |
-| 阶段8: Prompt强化 | ✅ 已完成 | 严格忠实于检索内容，禁止编造 |
+| 阶段8: Prompt强化 | ✅ 已完成 | 三个生成器(simple/crag/agent)统一4条严格规则，Validator增加"法条是否在资料中"检查 |
 | 阶段9: 参数调优 | ✅ 已完成 | CHUNK_SIZE=800, TOP_K=8, SCORE_THRESHOLD=0.2 |
 | 阶段10: 评估修复 | ✅ 已完成 | ragas 0.4.x兼容(LLM+Embedding传入) |
-| 阶段11: 评估完善 | 🔜 V4后 | 需增加纠错成功率/Agent准确率等指标 |
+| 阶段11: 评估完善 | ✅ 已完成 | question_type字段+分类型统计+每题详情+异步后台执行+前端轮询+V4实验配置 |
 
 ## V3 进度
 
@@ -49,7 +49,8 @@ description: 开发进度追踪 - 记录当前完成状态，对话丢失后快�
 | 阶段6: CRAG流程可视化 | ✅ 已完成 | ChatResponse.crag_steps + 前端CragStepsPanel |
 | 阶段7: 对比实验代码 | ✅ 已完成 | run_v3_comparison.py + 前端评估页更新 |
 | 端到端测试 | ✅ 已完成 | CRAG工作流实际测试通过 |
-| 对比实验运行 | ⏸ 延后V4后 | 需V4完成后统一运行四版对比 |
+| 对比实验代码 | ✅ 已完成 | run_v3_comparison.py支持V1-V4四组实验 |
+| 对比实验运行 | ⏸ 延后 | 需统一运行四版对比 |
 
 ## V3 升级优化进度
 
@@ -70,12 +71,16 @@ description: 开发进度追踪 - 记录当前完成状态，对话丢失后快�
 |------|------|------|
 | AgenticRAGGraph主框架 | ✅ 已完成 | agent_graph.py, 5个Agent节点+LangGraph状态图 |
 | Router Agent | ✅ 已完成 | LLM意图分类(retrieve/calculate/compare) |
-| Calculator Agent | ✅ 已完成 | 5种劳动法计算(加班费/经济补偿金/赔偿金/双倍工资/年休假工资) |
+| Calculator Agent | ✅ 已完成 | 5种劳动法计算+缺参时返回公式框架而非放弃 |
 | Comparator Agent | ✅ 已完成 | 双组检索+LLM结构化对比 |
-| Validator Agent | ✅ 已完成 | 合法性+幻觉验证，未通过追加警告 |
+| Validator Agent | ✅ 已完成 | 合法性+幻觉验证(含"法条是否在资料中"检查)，未通过追加警告 |
 | rag_engine集成 | ✅ 已完成 | RAG_MODE=agent，带降级兜底 |
 | config/schemas更新 | ✅ 已完成 | RAG_MODE支持simple|crag|agent |
 | 端到端测试 | ⬜ 待测试 | 需实际运行验证 |
+| 代码重构 | ✅ 已完成 | _first_match/_parse_cn_salary提取, _mean_scores合并重复逻辑, routes简化 |
+| Prompt统一强化 | ✅ 已完成 | simple/crag/agent三路生成prompt统一4条规则, Validator增加资料内法条检查 |
+| auto_calculate改进 | ✅ 已完成 | 缺参时返回公式框架+缺失参数提示，不再直接放弃 |
+| 评估异步化 | ✅ 已完成 | 后台线程执行+GET /evaluation/status轮询+前端轮询模式+页面恢复状态 |
 | 对比实验运行 | ⏸ 延后 | 需V1-V4四版统一对比 |
 
 ## 技术决策记录
@@ -107,3 +112,7 @@ description: 开发进度追踪 - 记录当前完成状态，对话丢失后快�
 - 2026-05-20: 实现V4 Agentic RAG，agent_graph.py五Agent协作(Router/Retriever/Calculator/Comparator/Validator)
 - 2026-05-20: Calculator Agent支持5种劳动法计算(加班费/经济补偿金/赔偿金/双倍工资/年休假工资)
 - 2026-05-20: rag_engine.py集成RAG_MODE=agent，带降级兜底，config RAG_MODE支持simple|crag|agent
+- 2026-05-23: 代码重构：agent_graph提取_first_match/_parse_cn_salary简化参数提取；eval_runner提取_mean_scores合并重复指标解析；routes用**result解包简化返回
+- 2026-05-23: Prompt统一强化：simple/crag/agent三路生成prompt统一4条严格规则(禁止编造/必须出现在资料中)；VALIDATOR_PROMPT新增"法条是否在参考资料中"检查维度
+- 2026-05-23: auto_calculate改进：缺参时返回公式框架+缺失参数提示，不再直接返回"未能识别"
+- 2026-05-23: 评估系统完善：eval_dataset增加question_type字段(24题)；eval_runner支持rag_mode/question_type参数+分类型统计+每题详情；routes评估异步化(后台线程+状态轮询)；前端轮询模式+页面恢复状态；run_v3_comparison.py添加V4实验配置

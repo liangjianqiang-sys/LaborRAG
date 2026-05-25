@@ -1,15 +1,16 @@
-"""V3对比实验脚本：运行V1/V2/V3三组RAGAS评估并对比结果。
+"""V1-V4对比实验脚本：运行四组RAGAS评估并对比结果。
 
 用法：
     cd backend
-    python run_v3_comparison.py          # 运行全部三组
-    python run_v3_comparison.py --only crag   # 只运行V3(CRAG)
-    python run_v3_comparison.py --only vector hybrid crag  # 指定多组
+    python run_v3_comparison.py              # 运行全部四组
+    python run_v3_comparison.py --only agent # 只运行V4(Agentic RAG)
+    python run_v3_comparison.py --only vector crag agent  # 指定多组
 
 实验配置：
     V1: RETRIEVER_TYPE=vector, RAG_MODE=simple
     V2: RETRIEVER_TYPE=reranked, RAG_MODE=simple
     V3: RETRIEVER_TYPE=reranked, RAG_MODE=crag
+    V4: RETRIEVER_TYPE=reranked, RAG_MODE=agent
 """
 import os
 import sys
@@ -48,6 +49,11 @@ EXPERIMENTS = {
         "label": "V3 CRAG自我纠错",
         "RETRIEVER_TYPE": "reranked",
         "RAG_MODE": "crag",
+    },
+    "agent": {
+        "label": "V4 Agentic RAG",
+        "RETRIEVER_TYPE": "reranked",
+        "RAG_MODE": "agent",
     },
 }
 
@@ -114,7 +120,7 @@ def print_comparison(results: list):
         return
 
     print(f"\n{'='*70}")
-    print("  📊 V1 vs V2 vs V3 对比实验结果")
+    print("  📊 V1 vs V2 vs V3 vs V4 对比实验结果")
     print(f"{'='*70}")
 
     # 收集所有指标
