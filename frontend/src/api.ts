@@ -243,7 +243,7 @@ export async function getBadCases(topN = 5): Promise<BadCase[]> {
 // V3 断点续评接口
 export interface PersistentTask {
   task_id: string
-  status: 'created' | 'running' | 'paused' | 'completed' | 'failed'
+  status: 'created' | 'running' | 'scoring' | 'paused' | 'completed' | 'failed'
   rag_mode: string | null
   sample_count: number | null
   question_type: string | null
@@ -341,5 +341,23 @@ export async function getPersistentProgress(taskId: string): Promise<PersistentP
 export async function getPersistentReport(taskId: string): Promise<PersistentReport> {
   const res = await fetch(`${API_BASE}/evaluation/persistent/report?task_id=${encodeURIComponent(taskId)}`)
   if (!res.ok) throw new Error('获取报告失败')
+  return res.json()
+}
+
+export async function forceStopPersistentTask(taskId: string): Promise<{ task_id: string; message: string; status: string }> {
+  const res = await fetch(`${API_BASE}/evaluation/persistent/force-stop?task_id=${encodeURIComponent(taskId)}`, { method: 'POST' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || '停止任务失败')
+  }
+  return res.json()
+}
+
+export async function deletePersistentTask(taskId: string): Promise<{ task_id: string; message: string }> {
+  const res = await fetch(`${API_BASE}/evaluation/persistent/delete?task_id=${encodeURIComponent(taskId)}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || '删除任务失败')
+  }
   return res.json()
 }

@@ -27,6 +27,7 @@ from langgraph.graph import StateGraph, END
 
 from app.config import settings
 from app.core.retriever.compressor import EmbeddingsCompressor
+from app.core.generator.prompts import ANSWER_STYLE_RULES
 
 
 # ─── 状态定义 ───────────────────────────────────────────────
@@ -34,6 +35,7 @@ from app.core.retriever.compressor import EmbeddingsCompressor
 class AgentState(TypedDict, total=False):
     """Agentic RAG工作流状态。"""
     question: str                           # 原始问题
+    rewritten_question: str                 # 改写后的问题（追问补全）
     conversation_context: str               # 对话上下文
     intent: str                             # 意图分类: "retrieve" | "calculate" | "compare"
     context_docs: List[Tuple[Document, float]]  # 检索到的文档
@@ -46,6 +48,21 @@ class AgentState(TypedDict, total=False):
 
 
 # ─── Prompt模板 ─────────────────────────────────────────────
+
+QUERY_REWRITE_PROMPT = """你是对话上下文感知的查询改写器。根据对话历史，将用户的追问/补充问题改写为完整的独立问题。
+
+规则：
+1. 如果用户问题是追问（缺少主语/上下文），结合对话历史补全为完整问题
+2. 保留用户补充的新信息（如具体金额、年限等参数）
+3. 如果问题本身已经完整，直接原样输出
+4. 只输出改写后的问题，不要解释
+
+对话上下文：
+{conversation_context}
+
+用户问题：{question}
+
+改写后的完整问题："""
 
 INTENT_ROUTER_PROMPT = """你是劳动法问答系统的意图路由器，判断用户问题属于哪类，只输出一个词。
 
@@ -61,16 +78,14 @@ INTENT_ROUTER_PROMPT = """你是劳动法问答系统的意图路由器，判断
 
 只输出一个词：retrieve、calculate、compare，不要解释。"""
 
-CALCULATOR_PROMPT = """你是劳动法律师助手，基于以下法条和计算结果回答问题。
+CALCULATOR_PROMPT = """{style_rules}
 
-规则：
-1. 先列出计算公式和法条依据
-2. 代入具体数值计算
-3. 给出最终金额（保留2位小数）
-4. 如果计算结果与法条不符，以法条为准
-5. 只引用参考资料中明确出现的法条，禁止编造或凭记忆补充
-6. 不要添加参考资料之外的法律知识
-7. 不要添加"建议咨询律师"等与参考资料无关的总结性套话
+额外规则（计算场景）：
+- 必须代入具体数值计算，给出最终金额（保留2位小数）
+- 先给出计算结果，再解释公式和法条依据
+- 如果计算结果与法条不符，以法条为准
+
+对话上下文：{conversation_context}
 
 参考资料：
 {context}
@@ -81,12 +96,11 @@ CALCULATOR_PROMPT = """你是劳动法律师助手，基于以下法条和计算
 
 回答："""
 
-COMPARATOR_PROMPT = """你是劳动法律师助手，基于以下两组法条进行对比分析。
+COMPARATOR_PROMPT = """{style_rules}
 
-规则：
-1. 只引用下方资料中明确出现的法条，禁止编造或凭记忆补充
-2. 不要添加资料之外的法律知识
-3. 不要添加"建议咨询律师"等与资料无关的总结性套话
+额外规则（对比场景）：
+- 用通俗语言对比两个概念的区别，不要堆砌法条原文
+- 先总结核心区别，再展开细节
 
 第一组（概念A）：
 {context_a}
@@ -392,10 +406,41 @@ class AgenticRAGGraph:
 
     # ─── 节点函数 ──────────────────────────────────────────
 
+    def _rewrite_query(self, state: AgentState) -> dict:
+        """上下文感知查询改写：将追问补全为完整独立问题。"""
+        question = state["question"]
+        conversation_context = state.get("conversation_context", "")
+
+        # 无上下文或问题已经足够长，跳过改写
+        if not conversation_context or len(question) > 30:
+            steps = state.get("steps", [])
+            steps.append(f"查询改写: 跳过（问题已完整）")
+            return {"rewritten_question": question, "steps": steps}
+
+        print(f"[Agent] ✏️ 上下文感知查询改写...")
+        prompt = ChatPromptTemplate.from_template(QUERY_REWRITE_PROMPT)
+        chain = prompt | self.grader_llm
+        result = chain.invoke({
+            "question": question,
+            "conversation_context": conversation_context,
+        })
+
+        rewritten = result.content.strip()
+        if not rewritten or rewritten == question:
+            rewritten = question
+            step_msg = "查询改写: 无需改写"
+        else:
+            step_msg = f"查询改写: '{question[:30]}...' → '{rewritten[:30]}...'"
+            print(f"[Agent] ✏️ 改写结果: {question} → {rewritten}")
+
+        steps = state.get("steps", [])
+        steps.append(step_msg)
+        return {"rewritten_question": rewritten, "steps": steps}
+
     def _route_intent(self, state: AgentState) -> dict:
         """Router Agent：意图识别，决定分派给哪个专业Agent。"""
         print(f"[Agent] 🧭 路由意图识别...")
-        question = state["question"]
+        question = state.get("rewritten_question") or state["question"]
         conversation_context = state.get("conversation_context", "")
 
         prompt = ChatPromptTemplate.from_template(INTENT_ROUTER_PROMPT)
@@ -422,7 +467,7 @@ class AgenticRAGGraph:
     def _retrieve_docs(self, state: AgentState) -> dict:
         """Retriever Agent：检索法条文档（三种路径共用）。"""
         print(f"[Agent] 🔍 检索法条...")
-        question = state["question"]
+        question = state.get("rewritten_question") or state["question"]
 
         docs = self.retriever.retrieve(
             query=question,
@@ -449,7 +494,7 @@ class AgenticRAGGraph:
         从问题中提取两个对比概念，分别检索。
         """
         print(f"[Agent] 🔍 对比检索...")
-        question = state["question"]
+        question = state.get("rewritten_question") or state["question"]
 
         # 先检索第一组（用完整问题）
         docs_a = self.retriever.retrieve(
@@ -490,7 +535,7 @@ class AgenticRAGGraph:
     def _calculate(self, state: AgentState) -> dict:
         """Calculator Agent：检索法条 + 精确计算。"""
         print(f"[Agent] 🧮 计算Agent执行...")
-        question = state["question"]
+        question = state.get("rewritten_question") or state["question"]
         conversation_context = state.get("conversation_context", "")
         docs = state.get("context_docs", [])
 
@@ -508,6 +553,8 @@ class AgenticRAGGraph:
             "context": context,
             "calculation_result": calc_result,
             "question": question,
+            "conversation_context": conversation_context or "（无对话上下文）",
+            "style_rules": ANSWER_STYLE_RULES,
         })
 
         steps = state.get("steps", [])
@@ -517,7 +564,7 @@ class AgenticRAGGraph:
     def _compare(self, state: AgentState) -> dict:
         """Comparator Agent：对比分析两组法条。"""
         print(f"[Agent] ⚖️ 对比Agent执行...")
-        question = state["question"]
+        question = state.get("rewritten_question") or state["question"]
         docs_a = state.get("context_docs", [])
         docs_b = state.get("context_docs_b", [])
 
@@ -530,6 +577,7 @@ class AgenticRAGGraph:
             "context_a": context_a,
             "context_b": context_b,
             "question": question,
+            "style_rules": ANSWER_STYLE_RULES,
         })
 
         steps = state.get("steps", [])
@@ -539,20 +587,14 @@ class AgenticRAGGraph:
     def _generate_from_retrieval(self, state: AgentState) -> dict:
         """Retriever路径生成：基于检索文档直接生成回答。"""
         print(f"[Agent] 🤖 检索路径生成回答...")
-        question = state["question"]
+        question = state.get("rewritten_question") or state["question"]
         docs = state.get("context_docs", [])
         conversation_context = state.get("conversation_context", "")
 
         context = self._format_docs(docs, fallback="未找到相关参考资料。")
 
         prompt = ChatPromptTemplate.from_template(
-            "你是劳动法律师助手。你必须严格基于以下参考资料回答问题。\n\n"
-            "【重要规则】\n"
-            "1. 只引用参考资料中明确出现的法条，标明出处；禁止编造或凭记忆补充法条\n"
-            "2. 如果参考资料中没有相关信息，必须说明\"根据现有资料无法回答\"\n"
-            "3. 引用法律条文时，该条文必须出现在参考资料中，不能引用资料未包含的法条\n"
-            "4. 不要添加参考资料之外的法律知识\n"
-            "5. 不要添加\"建议咨询律师\"等与参考资料无关的总结性套话\n\n"
+            "{style_rules}\n\n"
             "对话上下文：{conversation_context}\n\n"
             "参考资料：\n{context}\n\n"
             "问题：{question}\n\n回答："
@@ -562,6 +604,7 @@ class AgenticRAGGraph:
             "context": context,
             "question": question,
             "conversation_context": conversation_context or "（无对话上下文）",
+            "style_rules": ANSWER_STYLE_RULES,
         })
 
         steps = state.get("steps", [])
@@ -651,8 +694,10 @@ class AgenticRAGGraph:
         # Validator
         graph.add_node("validate", self._validate)
 
-        # ── 入口 ──
-        graph.set_entry_point("route_intent")
+        # ── 入口：先改写追问，再路由意图 ──
+        graph.add_node("rewrite_query", self._rewrite_query)
+        graph.set_entry_point("rewrite_query")
+        graph.add_edge("rewrite_query", "route_intent")
 
         # ── 意图路由 ──
         graph.add_conditional_edges(
@@ -697,5 +742,6 @@ class AgenticRAGGraph:
             "context_docs": result.get("context_docs", []),
             "steps": result.get("steps", []),
             "intent": result.get("intent", ""),
+            "rewritten_question": result.get("rewritten_question", ""),
             "calculation_result": result.get("calculation_result", ""),
         }

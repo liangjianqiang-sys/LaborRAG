@@ -5,23 +5,16 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
 from app.core.generator.base import BaseGenerator
 from app.config import settings
+from app.core.generator.prompts import ANSWER_STYLE_RULES
 
-RAG_PROMPT_TEMPLATE = """你是一个专业的劳动法律师助手。你必须严格基于以下提供的法律条文和参考资料来回答问题。
-
-【重要规则】
-1. 回答必须严格基于提供的参考资料，禁止编造任何法律条文或内容
-2. 如果参考资料中没有相关信息，必须明确告知"根据现有资料无法回答该问题"
-3. 引用法律条文时，必须标明出处（如：《劳动合同法》第X条），且该条文必须出现在参考资料中
-4. 不要添加参考资料之外的法律知识或个人理解
-5. 对不确定的内容使用"根据参考资料""可能"等限定词
-6. 不要添加"建议咨询专业律师"等与参考资料无关的总结性套话
+RAG_PROMPT_TEMPLATE = """{style_rules}
 
 参考资料：
 {context}
 
 用户问题：{question}
 
-请严格基于以上参考资料回答用户的问题："""
+请基于以上参考资料回答用户的问题："""
 
 
 class SimpleChainGenerator(BaseGenerator):
@@ -53,5 +46,6 @@ class SimpleChainGenerator(BaseGenerator):
         answer = self.chain.invoke({
             "context": context,
             "question": question,
+            "style_rules": ANSWER_STYLE_RULES,
         })
         return answer

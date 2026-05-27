@@ -17,49 +17,54 @@ function AppContent() {
   const isChat = location.pathname === '/'
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
-      {/* 顶部导航 */}
-      <header className="flex items-center h-14 bg-white border-b border-gray-200 flex-shrink-0 px-4">
-        <div className="flex items-center gap-2 mr-8">
-          <Scale size={22} className="text-emerald-600" />
-          <span className="text-lg font-bold text-gray-800">LaborRAG</span>
-          <span className="hidden sm:inline text-sm text-gray-400">劳动法智能问答系统</span>
+    <div className="flex flex-col h-screen">
+      {/* ── 顶部导航 ── */}
+      <header className="flex items-center h-14 bg-white/80 backdrop-blur-md border-b border-brand-100/50 flex-shrink-0 px-4 lg:px-6 shadow-[0_1px_3px_rgba(59,130,246,0.04)]">
+        <div className="flex items-center gap-2.5 mr-6 lg:mr-10">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-500 to-accent-500 flex items-center justify-center shadow-[0_2px_8px_rgba(59,130,246,0.25)]">
+            <Scale size={18} className="text-white" strokeWidth={2.2} />
+          </div>
+          <span className="text-base font-bold text-gradient-brand tracking-tight">LaborRAG</span>
+          <span className="hidden sm:inline text-sm text-slate-400 font-normal border-l border-slate-200 pl-3 ml-0.5">
+            劳动法智能问答系统
+          </span>
         </div>
-        <nav className="flex items-center gap-1">
+        <nav className="flex items-center gap-0.5">
           {navItems.map(({ to, icon: Icon, label }) => (
             <NavLink
               key={to}
               to={to}
               end={to === '/'}
               className={({ isActive }) =>
-                `flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                `flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
                   isActive
-                    ? 'bg-emerald-50 text-emerald-700'
-                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+                    ? 'bg-brand-50 text-brand-700 shadow-sm shadow-brand-200/50'
+                    : 'text-slate-500 hover:text-brand-600 hover:bg-brand-50/50'
                 }`
               }
             >
-              <Icon size={16} />
+              <Icon size={16} strokeWidth={1.8} />
               <span className="hidden sm:inline">{label}</span>
             </NavLink>
           ))}
         </nav>
       </header>
 
-      {/* 页面内容 - ChatPage始终挂载，其他页面正常切换 */}
+      {/* ── 页面内容 ── */}
       <main className="flex-1 overflow-hidden relative">
-        <div className={`h-full ${isChat ? '' : 'hidden'}`}>
-          <ChatPage />
+        <div className={`h-full transition-opacity duration-200 ${isChat ? 'opacity-100' : 'opacity-100'}`}>
+          {isChat ? (
+            <ChatPage />
+          ) : (
+            <div className="h-full animate-fade-in">
+              <Routes>
+                <Route path="/knowledge" element={<KnowledgePage />} />
+                <Route path="/evaluation" element={<EvalPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+              </Routes>
+            </div>
+          )}
         </div>
-        {!isChat && (
-          <div className="h-full">
-            <Routes>
-              <Route path="/knowledge" element={<KnowledgePage />} />
-              <Route path="/evaluation" element={<EvalPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-            </Routes>
-          </div>
-        )}
       </main>
     </div>
   )

@@ -1,1 +1,264 @@
 @import "tailwindcss";
+
+/* ============================================
+   LaborRAG 设计系统 — 蓝色主调
+   劳动法智能问答系统 · 专业 · 清晰 · 可信
+   ============================================ */
+
+@theme {
+  /* ── 品牌色: 蓝色渐变系 ── */
+  --color-brand-50:  #eff6ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-200: #bfdbfe;
+  --color-brand-300: #93c5fd;
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #2563eb;
+  --color-brand-700: #1d4ed8;
+  --color-brand-800: #1e40af;
+  --color-brand-900: #1e3a8a;
+
+  /* ── 辅助色: Indigo (评估/对比) ── */
+  --color-accent-50:  #eef2ff;
+  --color-accent-100: #e0e7ff;
+  --color-accent-200: #c7d2fe;
+  --color-accent-300: #a5b4fc;
+  --color-accent-400: #818cf8;
+  --color-accent-500: #6366f1;
+  --color-accent-600: #4f46e5;
+
+  /* ── 辅助色: Cyan (知识库) ── */
+  --color-cyan-50:  #ecfeff;
+  --color-cyan-100: #cffafe;
+  --color-cyan-500: #06b6d4;
+  --color-cyan-600: #0891b2;
+
+  /* ── 辅助色: Amber (警告/提示) ── */
+  --color-amber-50:  #fffbeb;
+  --color-amber-100: #fef3c7;
+  --color-amber-500: #f59e0b;
+  --color-amber-600: #d97706;
+
+  /* ── 辅助色: Emerald (成功) ── */
+  --color-emerald-50:  #ecfdf5;
+  --color-emerald-500: #10b981;
+  --color-emerald-600: #059669;
+
+  /* ── 字体 ── */
+  --font-sans: "Inter", "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+
+  /* ── 阴影系统（蓝色调） ── */
+  --shadow-card:        0 1px 3px 0 rgb(59 130 246 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+  --shadow-card-hover:  0 4px 14px 0 rgb(59 130 246 / 0.10), 0 1px 3px 0 rgb(0 0 0 / 0.04);
+  --shadow-elevated:    0 10px 30px -5px rgb(59 130 246 / 0.12), 0 4px 10px -6px rgb(0 0 0 / 0.05);
+  --shadow-toast:       0 8px 24px rgb(59 130 246 / 0.15);
+  --shadow-glow:        0 0 20px rgb(59 130 246 / 0.15);
+
+  /* ── 圆角 ── */
+  --radius-card:   0.75rem;
+  --radius-button: 0.5rem;
+  --radius-bubble: 1rem;
+  --radius-pill:   9999px;
+
+  /* ── 渐变 Token ── */
+  --gradient-brand:     linear-gradient(135deg, #3b82f6, #6366f1);
+  --gradient-brand-soft: linear-gradient(135deg, #dbeafe, #e0e7ff);
+  --gradient-brand-glow: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  --gradient-page-bg:   linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+}
+
+/* ── 全局样式 ── */
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--gradient-page-bg);
+  min-height: 100vh;
+}
+
+/* ── 滚动条（蓝色调） ── */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #bfdbfe;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #93c5fd;
+}
+
+/* ── 动画 ── */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes pulse-dot {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40%           { transform: scale(1);   opacity: 1; }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 8px rgb(59 130 246 / 0.2); }
+  50%      { box-shadow: 0 0 20px rgb(59 130 246 / 0.4); }
+}
+@keyframes thinking-dots {
+  0%   { content: ''; }
+  25%  { content: '.'; }
+  50%  { content: '..'; }
+  75%  { content: '...'; }
+  100% { content: ''; }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+.animate-slide-up {
+  animation: slide-up 0.35s ease-out;
+}
+.animate-scale-in {
+  animation: scale-in 0.25s ease-out;
+}
+.animate-glow-pulse {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+/* ── 消息气泡打字动画（蓝色调） ── */
+.typing-dot {
+  width: 6px;
+  height: 6px;
+  background: #93c5fd;
+  border-radius: 50%;
+  display: inline-block;
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+/* ── 思考中状态 ── */
+.thinking-indicator {
+  color: #64748b;
+  font-size: 0.8125rem;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+.thinking-indicator::before {
+  content: '';
+  width: 14px;
+  height: 14px;
+  border: 2px solid #bfdbfe;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Markdown 内容样式（蓝色调） ── */
+.prose-content h1 { font-size: 1.25rem; font-weight: 700; margin: 1rem 0 0.5rem; color: #1e3a8a; }
+.prose-content h2 { font-size: 1.125rem; font-weight: 600; margin: 0.875rem 0 0.5rem; color: #1e40af; }
+.prose-content h3 { font-size: 1rem; font-weight: 600; margin: 0.75rem 0 0.375rem; color: #1d4ed8; }
+.prose-content p  { margin: 0.375rem 0; line-height: 1.7; }
+.prose-content ul,
+.prose-content ol { padding-left: 1.25rem; margin: 0.375rem 0; }
+.prose-content li { margin: 0.25rem 0; line-height: 1.6; }
+.prose-content li::marker { color: #3b82f6; }
+.prose-content strong { font-weight: 600; color: #1e40af; }
+.prose-content code {
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.8125rem;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+}
+.prose-content pre {
+  background: #f8fafc;
+  border: 1px solid #dbeafe;
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+  font-size: 0.8125rem;
+}
+.prose-content blockquote {
+  border-left: 3px solid #3b82f6;
+  padding-left: 0.75rem;
+  margin: 0.5rem 0;
+  color: #475569;
+  background: #eff6ff;
+  border-radius: 0 0.375rem 0.375rem 0;
+  padding: 0.5rem 0.75rem;
+}
+.prose-content a {
+  color: #2563eb;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.prose-content a:hover {
+  color: #1d4ed8;
+}
+
+/* ── 渐变文字工具类 ── */
+.text-gradient-brand {
+  background: var(--gradient-brand);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── 渐变背景工具类 ── */
+.bg-gradient-brand {
+  background: var(--gradient-brand);
+}
+.bg-gradient-brand-soft {
+  background: var(--gradient-brand-soft);
+}
+.bg-gradient-brand-glow {
+  background: var(--gradient-brand-glow);
+}
+
+/* ── 卡片基础样式 ── */
+.card-base {
+  background: white;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  border: 1px solid rgb(226 232 240 / 0.6);
+  transition: box-shadow 0.2s ease, transform 0.15s ease;
+}
+.card-base:hover {
+  box-shadow: var(--shadow-card-hover);
+}
+
+/* ── 按钮渐变基础 ── */
+.btn-brand {
+  background: var(--gradient-brand);
+  color: white;
+  border-radius: var(--radius-button);
+  font-weight: 500;
+  transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.15s ease;
+}
+.btn-brand:hover {
+  box-shadow: var(--shadow-glow);
+  transform: translateY(-1px);
+}
+.btn-brand:active {
+  transform: scale(0.97);
+}

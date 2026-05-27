@@ -51,10 +51,17 @@ def _cn_to_int(cn: str) -> int:
 
 
 def _normalize_article(article: str) -> str:
-    """法条编号标准化为阿拉伯数字格式。
+    """法条编号标准化为阿拉伯数字格式，保留法律名前缀。
 
-    "第四十四条" → "第44条"，"第47条" → "第47条"。
+    "劳动法第四十四条" → "劳动法第44条"，"第47条" → "第47条"。
     """
+    # 提取法律名前缀（如"劳动法"、"劳动合同法"）
+    law_prefix = ""
+    for law in ("劳动法", "劳动合同法", "劳动争议调解仲裁法", "社会保险法", "工伤保险条例", "职工带薪年休假条例"):
+        if article.startswith(law):
+            law_prefix = law
+            break
+
     match = _ARTICLE_PATTERN.search(article)
     if not match:
         return article
@@ -62,9 +69,9 @@ def _normalize_article(article: str) -> str:
     num_part = raw[1:-1]  # 去掉"第"和"条"
     try:
         num = _cn_to_int(num_part)
-        return f"第{num}条"
+        return f"{law_prefix}第{num}条"
     except (ValueError, IndexError):
-        return raw
+        return f"{law_prefix}{raw}"
 
 
 def _extract_law_name(source: str) -> str:

@@ -28,7 +28,7 @@ from app.evaluation.response_metrics import (
     compute_response_metrics,
     compute_response_metrics_by_type,
 )
-from app.evaluation.utils import sanitize_floats, strip_per_query
+from app.evaluation.utils import sanitize_floats, strip_per_query, parallel_map
 from app.config import settings
 from app.core.embeddings import get_embeddings
 
@@ -67,7 +67,8 @@ class EvalRunner:
             openai_api_base=settings.EVAL_LLM_API_BASE,
             temperature=0,
             max_tokens=4096,
-            request_timeout=120,
+            request_timeout=180,
+            extra_body={"enable_thinking": False},
         )
         self.ragas_embeddings = get_embeddings()
 
@@ -97,42 +98,83 @@ class EvalRunner:
             if rag_mode:
                 settings.RAG_MODE = original_mode
 
+    def _gen_answer(self, item: dict) -> dict:
+        """单题答案生成（供并发调用）。返回结果dict，异常时返回None。"""
+        from app.models.schemas import ChatRequest
+        try:
+            response = self.rag_engine.chat(ChatRequest(question=item["question"]))
+            return {
+                "question": item["question"],
+                "answer": response.answer,
+                "contexts": [src.content for src in response.sources],
+                "ground_truth": item["ground_truth"],
+                "relevant_articles": item.get("relevant_articles", []),
+                "question_type": item.get("question_type", "retrieve"),
+                "law": item.get("law", ""),
+                "sources": [{"source": s.source, "content": s.content} for s in response.sources],
+                "source_count": len(response.sources),
+                "rag_mode": response.rag_mode,
+            }
+        except Exception as e:
+            print(f"  生成失败: {item['question'][:30]}... → {e}")
+            return None
+
     def _execute(self, dataset: list, rag_mode_label: str) -> Dict[str, Any]:
         """三阶段执行核心逻辑。"""
-        from app.models.schemas import ChatRequest
 
-        # ── 阶段1：生成答案（token消耗60-70%）──
+        # ── 阶段1：生成答案（token消耗60-70%，并发加速）──
+        total = len(dataset)
+        max_workers = settings.EVAL_MAX_CONCURRENT
+        print(f"[Phase 1] Generating answers on {total} samples (mode={rag_mode_label}, concurrent={max_workers})...")
+
+        gen_results = parallel_map(
+            self._gen_answer, dataset,
+            max_workers=max_workers, desc="Phase1",
+        )
+
+        # 按顺序收集成功结果，跳过失败题目
         questions, answers, contexts, ground_truths = [], [], [], []
-        sources_raw: List[List[Dict]] = []  # 用于检索指标
+        sources_raw: List[List[Dict]] = []
         relevant_articles_list: List[List[str]] = []
         question_types: List[str] = []
         details = []
-        total = len(dataset)
-        print(f"[Phase 1] Generating answers on {total} samples (mode={rag_mode_label})...")
 
-        for i, item in enumerate(dataset, 1):
-            print(f"  [{i}/{total}] {item['question'][:30]}...")
-            response = self.rag_engine.chat(ChatRequest(question=item["question"]))
-            questions.append(item["question"])
-            answers.append(response.answer)
-            contexts.append([src.content for src in response.sources])
-            ground_truths.append(item["ground_truth"])
-            relevant_articles_list.append(item.get("relevant_articles", []))
-            question_types.append(item.get("question_type", "retrieve"))
-
-            # 保存原始source信息（用于检索指标计算）
-            src_list = [{"source": s.source, "content": s.content} for s in response.sources]
-            sources_raw.append(src_list)
-
+        for i, result in enumerate(gen_results):
+            if result is None or isinstance(result, Exception):
+                # 失败题目用占位数据，保证索引对齐
+                item = dataset[i]
+                questions.append(item["question"])
+                answers.append("")
+                contexts.append([])
+                ground_truths.append(item["ground_truth"])
+                relevant_articles_list.append(item.get("relevant_articles", []))
+                question_types.append(item.get("question_type", "retrieve"))
+                sources_raw.append([])
+                details.append({
+                    "question": item["question"],
+                    "question_type": item.get("question_type", "retrieve"),
+                    "law": item.get("law", ""),
+                    "answer": "", "ground_truth": item["ground_truth"],
+                    "relevant_articles": item.get("relevant_articles", []),
+                    "source_count": 0, "rag_mode": rag_mode_label,
+                })
+                continue
+            questions.append(result["question"])
+            answers.append(result["answer"])
+            contexts.append(result["contexts"])
+            ground_truths.append(result["ground_truth"])
+            relevant_articles_list.append(result["relevant_articles"])
+            question_types.append(result["question_type"])
+            sources_raw.append(result["sources"])
             details.append({
-                "question": item["question"],
-                "question_type": item.get("question_type", "retrieve"),
-                "law": item.get("law", ""),
-                "answer": response.answer,
-                "ground_truth": item["ground_truth"],
-                "relevant_articles": item.get("relevant_articles", []),
-                "source_count": len(response.sources),
-                "rag_mode": response.rag_mode,
+                "question": result["question"],
+                "question_type": result["question_type"],
+                "law": result["law"],
+                "answer": result["answer"],
+                "ground_truth": result["ground_truth"],
+                "relevant_articles": result["relevant_articles"],
+                "source_count": result["source_count"],
+                "rag_mode": result["rag_mode"],
             })
 
         # 立即保存中间结果，评分失败时可直接重试
@@ -176,9 +218,9 @@ class EvalRunner:
 
         # ── 构建三元组核心指标 ──
         triad = {
-            "context_relevancy": scores.get("context_recall", 0.0),
-            "faithfulness": scores.get("faithfulness", 0.0),
-            "answer_relevancy": scores.get("answer_relevancy", 0.0),
+            "context_relevancy": scores.get("context_recall") or 0.0,
+            "faithfulness": scores.get("faithfulness") or 0.0,
+            "answer_relevancy": scores.get("answer_relevancy") or 0.0,
         }
 
         return {
@@ -207,6 +249,7 @@ class EvalRunner:
                 result = evaluate(
                     ds, metrics=self.METRICS,
                     llm=self.ragas_llm, embeddings=self.ragas_embeddings,
+                    batch_size=3,
                 )
                 result_df = result.to_pandas()
                 scores = _mean_scores(result_df)

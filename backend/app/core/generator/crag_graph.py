@@ -28,6 +28,7 @@ from langgraph.graph import StateGraph, END
 
 from app.config import settings
 from app.core.retriever.compressor import EmbeddingsCompressor
+from app.core.generator.prompts import ANSWER_STYLE_RULES
 
 
 # ─── 状态定义 ───────────────────────────────────────────────
@@ -108,14 +109,7 @@ COMPLEXITY_PROMPT = """你是查询复杂度分类器，判断用户问题的复
 
 只输出一个词：simple、medium、complex，不要解释。"""
 
-RAG_GENERATE_PROMPT = """你是劳动法律师助手。你必须严格基于以下参考资料回答问题。
-
-【重要规则】
-1. 只引用参考资料中明确出现的法条，标明出处；禁止编造或凭记忆补充法条
-2. 如果参考资料中没有相关信息，必须说明"根据现有资料无法回答"
-3. 引用法律条文时，该条文必须出现在参考资料中，不能引用资料未包含的法条
-4. 不要添加参考资料之外的法律知识
-5. 不要添加"建议咨询律师"等与参考资料无关的总结性套话
+RAG_GENERATE_PROMPT = """{style_rules}
 
 对话上下文：{conversation_context}
 
@@ -195,7 +189,7 @@ class AdaptiveRAGGraph:
         conversation_context = state.get("conversation_context", "")
 
         prompt = ChatPromptTemplate.from_template(
-            "你是劳动法律师助手。请简洁回答以下问题，如果涉及具体法条请标明出处。\n\n"
+            "{style_rules}\n\n"
             "对话上下文：{conversation_context}\n"
             "问题：{question}\n\n回答："
         )
@@ -203,6 +197,7 @@ class AdaptiveRAGGraph:
         result = chain.invoke({
             "question": question,
             "conversation_context": conversation_context or "（无对话上下文）",
+            "style_rules": ANSWER_STYLE_RULES,
         })
 
         steps = state.get("steps", [])
@@ -212,16 +207,27 @@ class AdaptiveRAGGraph:
     def _retrieve(self, state: CragState) -> dict:
         """检索节点：根据问题检索相关文档。
 
+        多轮对话改写：有上下文时先将追问补全为完整问题。
         HyDE条件触发：短查询（≤15字）自动生成假设答案用于检索，
         长查询/已有HyDE结果直接检索。
         """
         question = state["question"]
+        conversation_context = state.get("conversation_context", "")
         hyde_query = state.get("rewritten_question")
+
+        # 多轮对话改写：有上下文且问题是追问时，补全为完整问题
+        if conversation_context and not hyde_query:
+            ctx_rewrite = self._context_aware_rewrite(question, conversation_context)
+            if ctx_rewrite and ctx_rewrite != question:
+                question = ctx_rewrite
+                steps = state.get("steps", [])
+                steps.append(f"上下文改写: '{state['question'][:30]}...' → '{question[:30]}...'")
+                state = {**state, "steps": steps}
 
         # HyDE条件触发：短查询且尚未生成假设答案时，先触发HyDE
         if not hyde_query and len(question) <= HYDE_QUERY_LENGTH_THRESHOLD:
             print(f"[CRAG] 🔍 短查询检测({len(question)}字)，触发HyDE...")
-            hyde_state = self._rewrite_query(state)
+            hyde_state = self._rewrite_query({**state, "question": question})
             hyde_query = hyde_state.get("rewritten_question", question)
             state = {**state, **hyde_state}
 
@@ -241,7 +247,7 @@ class AdaptiveRAGGraph:
     def _grade_documents(self, state: CragState) -> dict:
         """检索质量评估节点：判断文档是否与问题相关。"""
         print(f"[CRAG] 📋 评估检索质量...")
-        question = state["question"]
+        question = state.get("rewritten_question") or state["question"]
         docs = state.get("context_docs", [])
 
         if not docs:
@@ -333,7 +339,7 @@ class AdaptiveRAGGraph:
         else:
             print(f"[CRAG] 🤖 生成回答...")
 
-        question = state["question"]
+        question = state.get("rewritten_question") or state["question"]
         docs = state.get("context_docs", [])
         conversation_context = state.get("conversation_context", "")
 
@@ -348,6 +354,7 @@ class AdaptiveRAGGraph:
             "context": context,
             "question": question,
             "conversation_context": conversation_context or "（无对话上下文）",
+            "style_rules": ANSWER_STYLE_RULES,
         })
 
         steps = state.get("steps", [])
@@ -505,6 +512,42 @@ class AdaptiveRAGGraph:
         return graph.compile()
 
     # ─── 对外接口 ──────────────────────────────────────────
+
+    @staticmethod
+    def _context_aware_rewrite(question: str, conversation_context: str) -> str:
+        """上下文感知查询改写：将追问补全为完整独立问题。
+
+        使用LLM根据对话历史重写问题，使追问变成可独立理解的完整问题。
+        """
+        if not conversation_context:
+            return question
+
+        rewrite_prompt = ChatPromptTemplate.from_template(
+            "你是对话上下文感知的查询改写器。根据对话历史，将用户的追问/补充问题改写为完整的独立问题。\n\n"
+            "规则：\n"
+            "1. 如果用户问题是追问（缺少主语/上下文），结合对话历史补全为完整问题\n"
+            "2. 保留用户补充的新信息（如具体金额、年限等参数）\n"
+            "3. 如果问题本身已经完整，直接原样输出\n"
+            "4. 只输出改写后的问题，不要解释\n\n"
+            "对话上下文：\n{conversation_context}\n\n"
+            "用户问题：{question}\n\n"
+            "改写后的完整问题："
+        )
+        chain = rewrite_prompt | ChatOpenAI(
+            model=settings.LLM_MODEL_NAME,
+            openai_api_key=settings.LLM_API_KEY,
+            openai_api_base=settings.LLM_API_BASE,
+            temperature=0, max_tokens=128, request_timeout=30,
+        )
+        try:
+            result = chain.invoke({
+                "question": question,
+                "conversation_context": conversation_context,
+            })
+            rewritten = result.content.strip()
+            return rewritten if rewritten else question
+        except Exception:
+            return question
 
     def run(self, question: str, conversation_context: str = "") -> dict:
         """运行Adaptive RAG工作流，返回结果。

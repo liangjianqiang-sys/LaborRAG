@@ -1,0 +1,21 @@
+{
+  "task_id": "eval_20260526_181838_c11138",
+  "status": "completed",
+  "rag_mode": null,
+  "sample_count": 5,
+  "question_type": null,
+  "total_questions": 5,
+  "completed_indices": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "failed_indices": [],
+  "created_at": "2026-05-26T18:18:38.079602",
+  "updated_at": "2026-05-26T18:26:16.260821",
+  "started_at": "2026-05-26T18:18:38.134210",
+  "finished_at": "2026-05-26T18:26:16.260821",
+  "error": null
+}

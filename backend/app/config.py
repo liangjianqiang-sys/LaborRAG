@@ -67,6 +67,9 @@ class Settings:
     # RAG模式配置 (V3/V4)
     RAG_MODE: str = os.getenv("RAG_MODE", "simple")  # simple | crag | agent
 
+    # 评估并发配置
+    EVAL_MAX_CONCURRENT: int = int(os.getenv("EVAL_MAX_CONCURRENT", "4"))  # 评估答案生成并发度
+
     # HuggingFace镜像源（国内加速）
     HF_ENDPOINT: str = os.getenv("HF_ENDPOINT", "https://huggingface.co")
 

@@ -13,9 +13,10 @@
 | **对比分析** | "经济补偿金和赔偿金有什么区别？" | 双组检索 → 结构化对比表 |
 
 - **来源追溯**：每个回答附带参考法条来源、相关度分数，可追溯可验证
-- **多轮对话**：支持追问，历史上下文自动注入（如先问"经济补偿金怎么算"，再问"5年月薪6000能拿多少"）
+- **多轮对话**：支持追问，上下文感知查询改写自动补全追问为完整问题（如先问"工作5年被违法辞退赔偿金怎么算"，再问"假设月薪一万元呢"→自动改写为"工作5年被违法辞退赔偿金，月薪1万元"）
 - **缺参引导**：计算类问题缺少参数时，返回公式框架+法条依据+缺失参数提示，而非直接拒绝
-- **幻觉防护**：统一5条严格规则禁止编造法条，Validator验证引用法条是否在资料中，未通过自动追加警告
+- **幻觉防护**：统一规则禁止编造法条，Validator验证引用法条是否在资料中，未通过自动追加警告
+- **人性化回答**：7条风格规则（先共情→先结论→通俗解释+举例→实操建议→口语化→规避过时法条），告别法条搬运工式回答
 
 ### 📚 知识库管理
 
@@ -34,7 +35,11 @@
 - **可观测性面板**：检索质量 / 生成质量 / 业务指标 三维度概览
 - **Bad Case追踪**：得分最低题目快速定位问题
 - **每题详情**：展开查看每道题的回答、参考答案、检索/响应指标
-- **异步执行**：后台线程运行，前端轮询进度，离开页面再回来可恢复状态
+- **并发评估**：答案生成阶段并发执行（可配置并发度），显著缩短评估时间
+- **持久化断点续评**：每题结果实时保存，支持崩溃/重启后手动续评，绝不自动恢复
+- **任务管理**：创建/启动/继续/重评/停止/删除，全生命周期管理
+- **评分状态**：答案生成与RAGAS评分分阶段显示，评分中前端实时提示
+- **超时保护**：任务级超时自动标记失败，避免永久卡住
 - **对比报告**：多次评估结果自动对比，量化不同策略的改进效果
 
 ### 🔧 检索与生成技术栈
@@ -44,7 +49,7 @@
 | 混合检索 | 向量(FAISS) + BM25(jieba) + RRF融合 | 语义+关键词双路检索 |
 | 重排序 | BGE-Reranker-v2-m3 Cross-Encoder | Top-K精排 |
 | 上下文压缩 | EmbeddingsFilter | 过滤低相关文档，Token -20~30% |
-| 查询增强 | HyDE（短查询≤15字触发） | 生成假设答案提升检索精度 |
+| 查询增强 | HyDE（短查询≤15字触发）+ 上下文感知改写 | 生成假设答案提升检索精度 / 追问自动补全为完整问题 |
 | 自适应路由 | Adaptive RAG | 简单查询省40%+token，复杂查询走完整纠错链路 |
 | 自我纠错 | CRAG | 检索评估→HyDE→生成→忠实度评估闭环 |
 | 多Agent协作 | Router→Retriever/Calculator/Comparator→Validator | 意图分发+专业处理+质量把关 |
@@ -74,6 +79,11 @@
 用户问题
     │
     ▼
+┌──── Query Rewriter ────┐
+│  上下文感知查询改写      │
+│  追问补全为完整问题      │
+└────────┬──────────────┘
+         ▼
 ┌─────────── Router Agent ───────────┐
 │  LLM意图分类: retrieve/calculate/compare  │
 └───┬──────────┬──────────┬───────────┘
@@ -90,7 +100,7 @@
          ▼
        回答
 
-检索链路: HyDE查询增强 → Hybrid Search(向量+BM25+RRF)
+检索链路: 上下文改写 → HyDE查询增强 → Hybrid Search(向量+BM25+RRF)
         → Reranker精排 → 上下文压缩 → 父子分块提升
 ```
 
@@ -132,19 +142,21 @@ LaborRAG/
 │   │   │   │   └── compressor.py # V3 EmbeddingsFilter上下文压缩
 │   │   │   ├── generator/       # 生成层
 │   │   │   │   ├── base.py      # 抽象基类
+│   │   │   │   ├── prompts.py    # 共享回答风格规则（7条人性化规则）
 │   │   │   │   ├── simple_chain.py # V1/V2 LCEL链
 │   │   │   │   ├── crag_graph.py  # V3 Adaptive RAG状态图
 │   │   │   │   └── agent_graph.py  # V4 Agentic RAG多Agent
 │   │   │   └── rag_engine.py    # RAG引擎（自动选择检索策略）
 │   │   ├── evaluation/          # 三元组评估体系
-│   │   │   ├── utils.py          # 公共工具(sanitize_floats/strip_per_query)
+│   │   │   ├── utils.py          # 公共工具(sanitize_floats/strip_per_query/parallel_map/file_lock)
 │   │   │   ├── eval_dataset.py  # 24个标注问答对(含question_type+relevant_articles)
-│   │   │   ├── eval_runner.py   # 三阶段执行器(生成→检索指标→RAGAS+响应指标)
+│   │   │   ├── eval_runner.py   # 三阶段执行器(并发生成→检索指标→RAGAS+响应指标)
+│   │   │   ├── eval_persistent.py # 断点续评管理器(持久化/续评/停止/删除/超时保护)
 │   │   │   ├── eval_report.py   # 评估报告+三维度对比+BadCase+可观测性
 │   │   │   ├── retrieval_metrics.py  # 检索指标(P@k/R@k/F1/MRR/MAP)
 │   │   │   └── response_metrics.py   # 响应指标(ROUGE-L/BLEU/幻觉率/完整性)
 │   │   ├── api/
-│   │   │   └── routes.py       # API路由（12个端点，含可观测性+BadCase）
+│   │   │   └── routes.py       # API路由（含问答/知识库/评估/断点续评/停止/删除）
 │   │   └── models/
 │   │       └── schemas.py       # Pydantic数据模型
 │   ├── run.py                   # 后端启动入口
@@ -159,7 +171,7 @@ LaborRAG/
 │   │   ├── pages/               # 页面组件
 │   │   │   ├── ChatPage.tsx     # 问答页面
 │   │   │   ├── KnowledgePage.tsx # 知识库管理页面
-│   │   │   ├── EvalPage.tsx     # 三元组评估页面(可观测性+BadCase)
+│   │   │   ├── EvalPage.tsx     # 评估页面(断点续评+可观测性+BadCase+对比报告)
 │   │   │   └── SettingsPage.tsx  # 系统设置页面
 │   │   └── components/          # 通用组件
 │   │       ├── ChatWindow.tsx   # 聊天窗口（含CRAG步骤面板）
@@ -237,6 +249,16 @@ python frontend/run.py
 | GET | `/api/v1/evaluation/report` | 获取三维度对比报告 |
 | GET | `/api/v1/evaluation/observability` | 可观测性三维度概览 |
 | GET | `/api/v1/evaluation/bad-cases` | Bad Case列表 |
+| POST | `/api/v1/evaluation/persistent/create` | 创建断点续评任务 |
+| POST | `/api/v1/evaluation/persistent/start` | 启动任务 |
+| POST | `/api/v1/evaluation/persistent/resume` | 断点续评 |
+| POST | `/api/v1/evaluation/persistent/restart` | 重新评估 |
+| POST | `/api/v1/evaluation/persistent/retry-failed` | 重试失败条目 |
+| POST | `/api/v1/evaluation/persistent/force-stop` | 强制停止任务 |
+| DELETE | `/api/v1/evaluation/persistent/delete` | 删除任务 |
+| GET | `/api/v1/evaluation/persistent/tasks` | 任务列表 |
+| GET | `/api/v1/evaluation/persistent/progress` | 任务进度 |
+| GET | `/api/v1/evaluation/persistent/report` | 任务评估报告 |
 
 ## 检索策略配置
 
@@ -264,6 +286,8 @@ RERANKER_MODEL_NAME=BAAI/bge-reranker-v2-m3  # 重排序模型
 RERANK_TOP_K=5              # 重排序返回数量
 COMPRESSION_THRESHOLD=0.5    # 上下文压缩相似度阈值（低于此值丢弃）
 RAG_MODE=agent               # RAG模式: simple | crag | agent
+EVAL_MAX_CONCURRENT=2        # 评估答案生成并发度（默认4，API限流时降低）
+EVAL_TASK_TIMEOUT=1800       # 评估任务超时秒数（默认30分钟）
 ```
 
 ## 渐进式开发路线
@@ -275,7 +299,7 @@ RAG_MODE=agent               # RAG模式: simple | crag | agent
 | **V1** | 从0到1搭建RAG基础 | 向量检索 + LCEL链式生成 + 知识库管理 | ✅ 通过 |
 | **V2** | V1纯向量检索精度不足 | 混合检索 + 重排序 + 法条切分 + 三元组评估 | ✅ 通过 |
 | **V3** | V2无纠错能力，检索错误直接传给LLM | CRAG自我纠错 + HyDE增强 + 上下文压缩 + 多轮对话 | ✅ 通过 |
-| **V4** | V3无法处理计算/对比类问题 | 多Agent协作（意图路由+专业处理+质量验证） | ✅ 待测试 |
+| **V4** | V3无法处理计算/对比类问题 | 多Agent协作（意图路由+专业处理+质量验证）+ 上下文感知改写 + 人性化回答 | ✅ 通过 |
 
 ### V3 端到端测试成功标准
 ✅ CRAG工作流完整闭环
@@ -286,18 +310,23 @@ RAG_MODE=agent               # RAG模式: simple | crag | agent
 ✅ 忠实度评估工作（检测不忠实回答并重新生成）
 ✅ 上下文压缩生效（EmbeddingsFilter过滤低相关文档，减少token消耗）
 ✅ 多轮对话支持（上下文正确注入）
+✅ 上下文感知查询改写（追问自动补全为完整问题，检索+路由使用改写后问题）
+✅ 人性化回答风格（7条规则：共情→结论→通俗解释+举例→实操建议→口语化）
 ✅ 前端步骤展示（CRAG工作流7-10个步骤可视化）
 ✅ 参考来源完整（带评分和法律出处）
 
 ## V4 端到端测试成功标准
-⬜ Router意图分类准确（法条查询/计算类/对比类正确分发）
-⬜ Calculator精确计算（加班费/经济补偿金/赔偿金等，结果精确；缺参时返回公式框架）
-⬜ Comparator对比分析（双组检索+结构化对比表）
-⬜ Retriever路径正常（走V3检索+压缩链路，prompt统一4条规则防幻觉）
-⬜ Validator验证生效（检测幻觉+法条不在资料中并修正）
-⬜ 多Agent协作完整（Router→专业Agent→Validator全链路）
-⬜ Agent降级兜底（异常时自动降级到simple模式）
-⬜ 评估系统异步运行（后台线程+前端轮询+页面恢复状态）
+✅ Router意图分类准确（法条查询/计算类/对比类正确分发）
+✅ Calculator精确计算（加班费/经济补偿金/赔偿金等，结果精确；缺参时返回公式框架）
+✅ Comparator对比分析（双组检索+结构化对比表）
+✅ Retriever路径正常（走V3检索+压缩链路，prompt统一4条规则防幻觉）
+✅ Validator验证生效（检测幻觉+法条不在资料中并修正）
+✅ 多Agent协作完整（Router→专业Agent→Validator全链路）
+✅ 上下文感知查询改写（Agent入口rewrite_query节点→route_intent，CRAG检索前自动改写）
+✅ 人性化回答风格（共享prompts.py，7条规则统一所有生成Prompt）
+✅ Agent降级兜底（异常时自动降级到simple模式）
+✅ 评估系统异步运行（后台线程+前端轮询+页面恢复状态）
+✅ 断点续评+并发评估（持久化存储+手动续评+并发答案生成）
 ⬜ V1-V4四版对比实验
 
 ## 注意事项
@@ -309,5 +338,7 @@ RAG_MODE=agent               # RAG模式: simple | crag | agent
 - CRAG 模式每次提问约消耗 3000-4000 tokens（含3-4次LLM调用），简单模式约 2500 tokens
 - Agent 模式根据意图不同消耗不同：retrieve≈3000, calculate≈4000, compare≈5000 tokens
 - 评估对比实验将在V4完成后统一运行（V1 vs V2 vs V3 vs V4 四版对比）
+- 评估并发度建议设为2-4，过高可能触发API限流（`EVAL_MAX_CONCURRENT`）
+- 后端重启后未完成任务自动标记为「已暂停」，需手动点击「继续」恢复
 - 本系统回答仅供参考，不构成法律意见，具体问题请咨询专业律师
 - 详细技术知识参见 [KNOWLEDGE.md](KNOWLEDGE.md)

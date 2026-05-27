@@ -306,6 +306,26 @@ async def retry_failed_persistent_task(task_id: str):
     return _run_persistent_action(_get_persistent_manager().retry_failed, task_id, "失败条目重试已启动")
 
 
+@router.post("/evaluation/persistent/force-stop")
+async def force_stop_persistent_task(task_id: str):
+    """强制停止运行中的任务。"""
+    try:
+        _get_persistent_manager().force_stop(task_id)
+        return {"task_id": task_id, "message": "任务已停止", "status": "paused"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/evaluation/persistent/delete")
+async def delete_persistent_task(task_id: str):
+    """删除任务及其所有文件。"""
+    try:
+        _get_persistent_manager().delete(task_id)
+        return {"task_id": task_id, "message": "任务已删除"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/evaluation/persistent/tasks")
 async def list_persistent_tasks():
     """列出所有断点续评任务。"""
