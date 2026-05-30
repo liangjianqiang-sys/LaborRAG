@@ -14,17 +14,39 @@ from app.core.text_splitter import LawArticleSplitter
 _ARTICLE_REF_PATTERN = re.compile(r"第[一二三四五六七八九十百千\d]+条")
 
 # 法律名称 → 文件名映射
+# 注意：名称越长越精确的放在前面，避免短名错误匹配长名
 _LAW_NAME_MAP = {
+    # ── 主干法律（.txt） ──
     "劳动合同法": "劳动合同法.txt",
     "劳动法": "劳动法.txt",
     "劳动争议调解仲裁法": "劳动争议调解仲裁法.txt",
-    "工伤保险条例": "工伤保险条例.txt",
+    "工伤保险条例": "工伤保险条例.pdf",
     "社会保险法": "社会保险法.txt",
     "职工带薪年休假条例": "职工带薪年休假条例.txt",
+    # ── 新增配套法规（.pdf） ──
+    "中华人民共和国劳动合同法实施条例": "中华人民共和国劳动合同法实施条例.pdf",
+    "劳动合同法实施条例": "中华人民共和国劳动合同法实施条例.pdf",
+    "中华人民共和国职业病防治法": "中华人民共和国职业病防治法.pdf",
+    "职业病防治法": "中华人民共和国职业病防治法.pdf",
+    "住房公积金管理条例": "住房公积金管理条例.pdf",
+    "失业保险条例": "失业保险条例.pdf",
+    "女职工劳动保护特别规定": "女职工劳动保护特别规定.pdf",
+    "工资支付暂行规定": "工资支付暂行规定.pdf",
+    "最低工资规定": "最低工资规定.pdf",
+    "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）": "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）.pdf",
+    "最高人民法院关于审理劳动争议案件适用法律问题的解释二": "最高人民法院关于审理劳动争议案件适用法律问题的解释（二）.pdf",
+    "最高法劳动争议司法解释一": "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）.pdf",
+    "最高法劳动争议司法解释二": "最高人民法院关于审理劳动争议案件适用法律问题的解释（二）.pdf",
+    "劳动争议司法解释一": "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）.pdf",
+    "劳动争议司法解释二": "最高人民法院关于审理劳动争议案件适用法律问题的解释（二）.pdf",
+    "职工非因工伤残鉴定标准": "职工非因工伤残或因病丧失劳动能力程度鉴定标准(试行).pdf",
+    "法条适用前提速查表": "法条适用前提速查表.txt",
 }
 
-# 匹配法律名称的正则
-_LAW_NAME_PATTERN = re.compile("|".join(_LAW_NAME_MAP.keys()))
+# 匹配法律名称的正则（按名称长度降序排列，长名优先匹配避免歧义）
+_LAW_NAME_PATTERN = re.compile(
+    "|".join(sorted(_LAW_NAME_MAP.keys(), key=len, reverse=True))
+)
 
 # 阿拉伯数字 → 中文数字映射
 _DIGIT_TO_CN = {
@@ -73,21 +95,23 @@ def extract_article_ref(query: str) -> Optional[dict]:
         "劳动合同法第47条" → {"article": "第四十七条", "source": "劳动合同法.txt"}
         "第四十四条怎么规定的" → {"article": "第四十四条"}
         "加班费怎么算" → None（无法条编号）
+        "劳动法相关问题" → {"source": "劳动法.txt"}（仅法律名过滤）
     """
-    match = _ARTICLE_REF_PATTERN.search(query)
-    if not match:
-        return None
+    filter_dict = {}
 
-    article = _normalize_article_num(match.group())
-    filter_dict = {"article": article}
-
-    # 提取法律名称，避免不同法律同一条号混淆
+    # 提取法律名称，即使无法条编号也有过滤价值
     law_match = _LAW_NAME_PATTERN.search(query)
     if law_match:
         law_name = law_match.group()
         filter_dict["source"] = _LAW_NAME_MAP[law_name]
 
-    return filter_dict
+    # 提取法条编号
+    match = _ARTICLE_REF_PATTERN.search(query)
+    if match:
+        article = _normalize_article_num(match.group())
+        filter_dict["article"] = article
+
+    return filter_dict if filter_dict else None
 
 
 class VectorStoreManager:
@@ -280,7 +304,8 @@ class VectorStoreManager:
             self._save_parent_store()
 
     def _save_parent_store(self):
-        """将父块存储保存为 JSON 文件。"""
+        """将父块存储保存为 JSON 文件（线程安全）。"""
+        from app.evaluation.utils import file_lock as _file_lock
         os.makedirs(os.path.dirname(self._parent_store_path), exist_ok=True)
         data = {}
         for parent_id, doc in self.parent_store.items():
@@ -288,8 +313,9 @@ class VectorStoreManager:
                 "page_content": doc.page_content,
                 "metadata": doc.metadata,
             }
-        with open(self._parent_store_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with _file_lock:
+            with open(self._parent_store_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
 
     def _load_parent_store(self) -> bool:
         """从磁盘加载父块存储，成功返回True。"""

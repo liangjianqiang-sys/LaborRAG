@@ -57,7 +57,9 @@ def _normalize_article(article: str) -> str:
     """
     # 提取法律名前缀（如"劳动法"、"劳动合同法"）
     law_prefix = ""
-    for law in ("劳动法", "劳动合同法", "劳动争议调解仲裁法", "社会保险法", "工伤保险条例", "职工带薪年休假条例"):
+    for law in ("劳动合同法", "劳动争议调解仲裁法", "社会保险法", "工伤保险条例", "职工带薪年休假条例",
+                "女职工劳动保护特别规定", "最低工资规定", "工资支付暂行规定", "失业保险条例",
+                "劳动合同法实施条例", "劳动法"):
         if article.startswith(law):
             law_prefix = law
             break
@@ -194,6 +196,7 @@ def compute_retrieval_metrics(
         normalized_relevant = [_normalize_article(a) for a in relevant]
 
         pq = {
+            "precision@1": round(precision_at_k(retrieved_ids, normalized_relevant, 1), 4),
             f"precision@{k}": round(precision_at_k(retrieved_ids, normalized_relevant, k), 4),
             f"recall@{k}": round(recall_at_k(retrieved_ids, normalized_relevant, k), 4),
             f"f1@{k}": round(f1_at_k(retrieved_ids, normalized_relevant, k), 4),
@@ -206,7 +209,7 @@ def compute_retrieval_metrics(
 
     # 计算均值（ap在输出时重命名为map）
     metrics = {}
-    for key in [f"precision@{k}", f"recall@{k}", f"f1@{k}", "mrr"]:
+    for key in ["precision@1", f"precision@{k}", f"recall@{k}", f"f1@{k}", "mrr"]:
         metrics[key] = round(sum(pq[key] for pq in per_query) / len(per_query), 4)
     metrics["map"] = round(sum(pq["ap"] for pq in per_query) / len(per_query), 4)
     metrics["per_query"] = per_query

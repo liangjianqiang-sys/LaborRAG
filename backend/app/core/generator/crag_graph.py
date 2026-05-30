@@ -29,6 +29,7 @@ from langgraph.graph import StateGraph, END
 from app.config import settings
 from app.core.retriever.compressor import EmbeddingsCompressor
 from app.core.generator.prompts import ANSWER_STYLE_RULES
+from app.core.generator.guardrails import AnswerGuardrails
 
 
 # ─── 状态定义 ───────────────────────────────────────────────
@@ -51,8 +52,8 @@ class CragState(TypedDict, total=False):
 MAX_REWRITES = 1    # 最多改写1次
 MAX_REGENERATES = 1  # 最多重新生成1次
 HYDE_QUERY_LENGTH_THRESHOLD = 15  # HyDE触发阈值：查询≤15字时自动触发
-GRADE_ANSWER_CONTEXT_CHARS = 300 # 评估回答时上下文截断字数
-GRADE_ANSWER_ANSWER_CHARS = 600  # 评估回答时回答截断字数
+GRADE_ANSWER_CONTEXT_CHARS = 800 # 评估回答时上下文截断字数
+GRADE_ANSWER_ANSWER_CHARS = 1200  # 评估回答时回答截断字数
 
 
 # ─── Prompt模板 ─────────────────────────────────────────────
@@ -97,12 +98,25 @@ AI回答：{answer}
 
 请只回答 "faithful"（忠实）或 "unfaithful"（不忠实），不要回答其他内容。"""
 
-COMPLEXITY_PROMPT = """你是查询复杂度分类器，判断用户问题的复杂度，只输出一个词。
+COMPLEXITY_PROMPT = """你是劳动法领域的查询复杂度分类器，判断用户问题的复杂度，只输出一个词。
 
 定义：
-1. simple：常识性问题，无需检索法律条文即可回答（如"劳动法有多少条"、"什么是劳动合同"）
-2. medium：需要检索具体法条，但问题明确单一（如"加班工资怎么算"、"第四十四条怎么规定的"）
-3. complex：需要多步推理、对比分析或综合多个法条（如"违法解除和合法解除的赔偿区别"、"经济补偿金和赔偿金有什么不同"）
+1. simple：常识性/定义性问题，无需检索法律条文即可回答
+   例："劳动法是什么"、"劳动合同有哪些类型"
+   判断要点：不涉及具体条款或金额计算
+
+2. medium：需要检索具体法条，但问题明确单一
+   例："劳动合同法第47条怎么规定的"、"加班工资怎么算"、"试用期最长多久"
+   判断要点：指向单一法条或单一法律概念，不涉及跨法条对比或多步推理
+   ★ 包含"第X条"的问题 → 总是 medium
+   ★ 单轮对话的简单法条查询 → 总是 medium
+
+3. complex：需要多步推理、对比分析或综合多个法条
+   例："经济补偿金和赔偿金有什么区别"、"被公司辞退了能拿多少钱"、
+       "违法解除劳动合同有哪些法律后果"、"公司不给交社保怎么办"
+   判断要点：涉及两个以上法条对比、需要计算金额、包含"区别""怎么维权"
+   "能不能"等需要综合分析的问题
+   ★ 多轮对话中追问"那我的情况呢"→ 结合对话上下文判断
 
 对话上下文：{conversation_context}
 用户问题：{question}
@@ -130,14 +144,15 @@ class AdaptiveRAGGraph:
         self.retriever = retriever
         self.compressor = EmbeddingsCompressor()
 
-        # 评估用LLM（temperature=0，确保判断稳定）
+        # 评估用LLM（使用轻量模型，分类/评分更快）
         self.grader_llm = ChatOpenAI(
-            model=settings.LLM_MODEL_NAME,
-            openai_api_key=settings.LLM_API_KEY,
-            openai_api_base=settings.LLM_API_BASE,
+            model=settings.EVAL_LLM_MODEL_NAME,
+            openai_api_key=settings.EVAL_LLM_API_KEY or settings.LLM_API_KEY,
+            openai_api_base=settings.EVAL_LLM_API_BASE or settings.LLM_API_BASE,
             temperature=0,
             max_tokens=64,
             request_timeout=60,
+            extra_body={"enable_thinking": False},
         )
 
         # 生成用LLM
@@ -148,6 +163,7 @@ class AdaptiveRAGGraph:
             temperature=settings.LLM_TEMPERATURE,
             max_tokens=settings.LLM_MAX_TOKENS,
             request_timeout=60,
+            extra_body={"enable_thinking": False},
         )
 
         # 构建graph
@@ -538,6 +554,7 @@ class AdaptiveRAGGraph:
             openai_api_key=settings.LLM_API_KEY,
             openai_api_base=settings.LLM_API_BASE,
             temperature=0, max_tokens=128, request_timeout=30,
+            extra_body={"enable_thinking": False},
         )
         try:
             result = chain.invoke({
@@ -549,7 +566,7 @@ class AdaptiveRAGGraph:
         except Exception:
             return question
 
-    def run(self, question: str, conversation_context: str = "") -> dict:
+    def run(self, question: str, conversation_context: str = "", skip_guardrails: bool = False) -> dict:
         """运行Adaptive RAG工作流，返回结果。
 
         Args:
@@ -565,8 +582,12 @@ class AdaptiveRAGGraph:
             "steps": [],
         }
         result = self.graph.invoke(initial_state)
+        answer = result.get("answer", "")
+        # 评估模式下跳过护栏追加，避免RAGAS将追加内容判为幻觉
+        if not skip_guardrails:
+            answer = AnswerGuardrails.check(answer)
         return {
-            "answer": result.get("answer", ""),
+            "answer": answer,
             "context_docs": result.get("context_docs", []),
             "steps": result.get("steps", []),
             "rewritten_question": result.get("rewritten_question", ""),

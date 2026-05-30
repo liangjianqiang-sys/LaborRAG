@@ -1,8 +1,14 @@
 const API_BASE = '/api/v1'
 
+export interface ChatHistoryItem {
+  role: 'user' | 'assistant'
+  content: string
+}
+
 export interface ChatRequest {
   question: string
   conversation_id?: string
+  history?: ChatHistoryItem[]
 }
 
 export interface SourceDocument {
@@ -19,6 +25,8 @@ export interface ChatResponse {
   rag_mode: string
   crag_steps: string[]
   rewritten_question: string
+  confidence: number
+  disclaimer: boolean
 }
 
 export interface KnowledgeBaseStatus {
@@ -115,9 +123,9 @@ export interface EvalDetail {
 }
 
 export interface TriadMetrics {
-  context_relevancy: number
   faithfulness: number
-  answer_relevancy: number
+  context_precision: number
+  context_recall: number
 }
 
 export interface RetrievalMetrics {
@@ -168,8 +176,10 @@ export interface EvalComparison {
 
 export interface Observability {
   retrieval_quality: {
-    'recall@5': number
+    'precision@1': number
     'precision@5': number
+    'recall@5': number
+    'mrr': number
     corpus_coverage: number
   }
   generation_quality: {
@@ -194,32 +204,6 @@ export interface BadCase {
   rag_mode: string
   retrieval?: Record<string, number>
   response?: Record<string, number>
-}
-
-export async function startEvaluation(
-  sampleCount?: number,
-  ragMode?: string,
-  questionType?: string,
-): Promise<{ message: string; status: string }> {
-  const params = new URLSearchParams()
-  if (sampleCount) params.set('sample_count', String(sampleCount))
-  if (ragMode) params.set('rag_mode', ragMode)
-  if (questionType) params.set('question_type', questionType)
-  const qs = params.toString() ? `?${params.toString()}` : ''
-  const res = await fetch(`${API_BASE}/evaluation/run${qs}`, {
-    method: 'POST',
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || '启动评估失败')
-  }
-  return res.json()
-}
-
-export async function getEvaluationStatus(): Promise<EvalStatus> {
-  const res = await fetch(`${API_BASE}/evaluation/status`)
-  if (!res.ok) throw new Error('获取评估状态失败')
-  return res.json()
 }
 
 export async function getEvaluationReport(): Promise<EvalComparison> {

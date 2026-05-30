@@ -6,6 +6,7 @@ from langchain_openai import ChatOpenAI
 from app.core.generator.base import BaseGenerator
 from app.config import settings
 from app.core.generator.prompts import ANSWER_STYLE_RULES
+from app.core.generator.guardrails import AnswerGuardrails
 
 RAG_PROMPT_TEMPLATE = """{style_rules}
 
@@ -27,6 +28,7 @@ class SimpleChainGenerator(BaseGenerator):
             openai_api_base=settings.LLM_API_BASE,
             temperature=settings.LLM_TEMPERATURE,
             max_tokens=settings.LLM_MAX_TOKENS,
+            extra_body={"enable_thinking": False},
         )
         self.prompt = ChatPromptTemplate.from_template(RAG_PROMPT_TEMPLATE)
         self.chain = self.prompt | self.llm | StrOutputParser()
@@ -35,6 +37,7 @@ class SimpleChainGenerator(BaseGenerator):
         self,
         question: str,
         context_docs: List[Tuple[Document, float]],
+        skip_guardrails: bool = False,
     ) -> str:
         context = "\n\n".join(
             [
@@ -48,4 +51,9 @@ class SimpleChainGenerator(BaseGenerator):
             "question": question,
             "style_rules": ANSWER_STYLE_RULES,
         })
+
+        # 回答后校验：零 token 消耗，代码层面追加风险提示
+        # 评估模式下跳过护栏追加，避免RAGAS将追加内容判为幻觉
+        if not skip_guardrails:
+            answer = AnswerGuardrails.check(answer)
         return answer

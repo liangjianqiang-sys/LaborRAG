@@ -11,14 +11,16 @@ import time
 from datetime import datetime
 from typing import Dict, Any, List
 from datasets import Dataset
-from ragas import evaluate
+from ragas import evaluate, RunConfig
 from ragas.metrics import (
     faithfulness,
-    answer_relevancy,
     context_precision,
     context_recall,
 )
 from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
+from langchain_core.outputs import ChatResult
+from langchain_core.messages import BaseMessage
 from app.evaluation.eval_dataset import EVAL_DATASET
 from app.evaluation.retrieval_metrics import (
     compute_retrieval_metrics,
@@ -53,23 +55,58 @@ def _mean_scores(df, skip_extra=frozenset()) -> Dict[str, float]:
     return scores
 
 
+class _N1ChatModel(BaseChatModel):
+    """包装ChatOpenAI，强制n=1以兼容不支持n>1的API（如Qwen/DeepSeek）。
+
+    RAGAS的answer_relevancy指标内部会请求n=3次生成，但国内LLM API通常只支持n=1。
+    此wrapper拦截generate调用，将n强制设为1，避免BadRequestError。
+    """
+
+    base: ChatOpenAI
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    @property
+    def _llm_type(self) -> str:
+        return f"n1-wrapper({self.base._llm_type})"
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager=None,
+        **kwargs,
+    ) -> ChatResult:
+        # 强制n=1，兼容不支持多次生成的API
+        kwargs.pop('n', None)
+        return self.base._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    @property
+    def model_name(self) -> str:
+        return getattr(self.base, 'model_name', '')
+
+
 class EvalRunner:
     """评估执行器，对RAG系统进行三元组量化评估。"""
 
-    METRICS = [faithfulness, answer_relevancy, context_precision, context_recall]
+    METRICS = [faithfulness, context_precision, context_recall]  # 不含answer_relevancy（部分API不支持n>1）
     MAX_RETRIES = 3  # RAGAS评分最大重试次数
 
     def __init__(self, rag_engine):
         self.rag_engine = rag_engine
-        self.ragas_llm = ChatOpenAI(
-            model=settings.EVAL_LLM_MODEL_NAME,
-            openai_api_key=settings.EVAL_LLM_API_KEY,
-            openai_api_base=settings.EVAL_LLM_API_BASE,
+        # Qwen模型需要禁用思考模式，DeepSeek等其他模型不需要
+        extra_body = {"enable_thinking": False} if "qwen" in settings.RAGAS_MODEL_NAME.lower() else {}
+        base_llm = ChatOpenAI(
+            model=settings.RAGAS_MODEL_NAME,
+            openai_api_key=settings.RAGAS_API_KEY,
+            openai_api_base=settings.RAGAS_API_BASE,
             temperature=0,
             max_tokens=4096,
             request_timeout=180,
-            extra_body={"enable_thinking": False},
+            extra_body=extra_body,
         )
+        # 包装为n=1兼容模型
+        self.ragas_llm = _N1ChatModel(base=base_llm)
         self.ragas_embeddings = get_embeddings()
 
     def run(self, sample_count: int = None, rag_mode: str = None, question_type: str = None) -> Dict[str, Any]:
@@ -102,11 +139,13 @@ class EvalRunner:
         """单题答案生成（供并发调用）。返回结果dict，异常时返回None。"""
         from app.models.schemas import ChatRequest
         try:
-            response = self.rag_engine.chat(ChatRequest(question=item["question"]))
+            response = self.rag_engine.chat(ChatRequest(question=item["question"], skip_guardrails=True), use_reranker=True)
+            # 优先使用完整contexts（不截断），避免RAGAS误判幻觉
+            contexts = response.full_contexts if response.full_contexts else [src.content for src in response.sources]
             return {
                 "question": item["question"],
                 "answer": response.answer,
-                "contexts": [src.content for src in response.sources],
+                "contexts": contexts,
                 "ground_truth": item["ground_truth"],
                 "relevant_articles": item.get("relevant_articles", []),
                 "question_type": item.get("question_type", "retrieve"),
@@ -211,6 +250,9 @@ class EvalRunner:
             faithfulness_scores=faithfulness_per_query,
             llm=self.ragas_llm,
         )
+        # 将每题faithfulness写入details
+        for i, f in enumerate(faithfulness_per_query):
+            details[i]["faithfulness"] = f
         # 将每题响应指标写入details
         for i, pq in enumerate(response_metrics.get("per_query", [])):
             details[i]["response"] = pq
@@ -220,7 +262,7 @@ class EvalRunner:
         triad = {
             "context_relevancy": scores.get("context_recall") or 0.0,
             "faithfulness": scores.get("faithfulness") or 0.0,
-            "answer_relevancy": scores.get("answer_relevancy") or 0.0,
+            # answer_relevancy已移除（部分API不支持n>1）
         }
 
         return {
@@ -246,10 +288,17 @@ class EvalRunner:
         for attempt in range(1, self.MAX_RETRIES + 1):
             try:
                 print(f"[Phase 3] Computing RAGAS metrics (attempt {attempt}/{self.MAX_RETRIES})...")
+                run_config = RunConfig(
+                    timeout=180,
+                    max_retries=3,
+                    max_wait=300,
+                    max_workers=4,
+                )
                 result = evaluate(
                     ds, metrics=self.METRICS,
                     llm=self.ragas_llm, embeddings=self.ragas_embeddings,
                     batch_size=3,
+                    run_config=run_config,
                 )
                 result_df = result.to_pandas()
                 scores = _mean_scores(result_df)

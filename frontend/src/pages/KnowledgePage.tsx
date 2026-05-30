@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Database,
   RefreshCw,
@@ -49,8 +49,7 @@ export default function KnowledgePage() {
     setTimeout(() => setMessage(null), 3000)
   }
 
-  const handleBuild = async (e: FormEvent) => {
-    e.preventDefault()
+  const handleBuild = async () => {
     setBuilding(true)
     try {
       await buildKnowledgeBase(true)
@@ -99,8 +98,9 @@ export default function KnowledgePage() {
       value: status?.vector_store_exists ? '已就绪' : '未构建',
       icon: Database,
       color: status?.vector_store_exists
-        ? 'text-emerald-600 bg-emerald-50 border-emerald-100'
-        : 'text-slate-400 bg-slate-50 border-slate-200',
+        ? 'text-emerald-600 bg-emerald-50'
+        : 'text-slate-400 bg-slate-50',
+      borderClass: status?.vector_store_exists ? 'border-emerald-100' : 'border-slate-200',
       iconColor: status?.vector_store_exists ? 'text-emerald-500' : 'text-slate-400',
       iconBg: status?.vector_store_exists ? 'bg-emerald-100' : 'bg-slate-100',
     },
@@ -108,7 +108,8 @@ export default function KnowledgePage() {
       label: '文档数量',
       value: status?.total_documents ?? '-',
       icon: BookOpen,
-      color: 'text-brand-600 bg-brand-50 border-brand-100',
+      color: 'text-brand-600 bg-brand-50',
+      borderClass: 'border-brand-100',
       iconColor: 'text-brand-500',
       iconBg: 'bg-brand-100',
     },
@@ -116,7 +117,8 @@ export default function KnowledgePage() {
       label: '向量片段',
       value: status?.total_chunks ?? '-',
       icon: Layers,
-      color: 'text-accent-600 bg-accent-50 border-accent-200',
+      color: 'text-accent-600 bg-accent-50',
+      borderClass: 'border-accent-200',
       iconColor: 'text-accent-500',
       iconBg: 'bg-accent-100',
     },
@@ -124,7 +126,8 @@ export default function KnowledgePage() {
       label: 'Embedding 模型',
       value: status?.embedding_model?.split('/').pop() ?? '-',
       icon: Cpu,
-      color: 'text-cyan-600 bg-cyan-50 border-cyan-100',
+      color: 'text-cyan-600 bg-cyan-50',
+      borderClass: 'border-cyan-100',
       iconColor: 'text-cyan-500',
       iconBg: 'bg-cyan-100',
       tooltip: status?.embedding_model,
@@ -149,7 +152,7 @@ export default function KnowledgePage() {
         {statCards.map((card, i) => (
           <div
             key={i}
-            className={`rounded-xl border p-4 card-base ${card.color.split(' ').slice(-1)[0]}`}
+            className={`rounded-xl border p-4 card-base ${card.color} ${card.borderClass}`}
           >
             <div className="flex items-center gap-2.5">
               <div className={`w-9 h-9 rounded-lg ${card.iconBg} flex items-center justify-center`}>

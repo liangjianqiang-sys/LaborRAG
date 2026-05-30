@@ -29,7 +29,7 @@ class HybridRetriever(BaseRetriever):
         self.rrf_k = rrf_k  # RRF常数，通常60
 
     def retrieve(
-        self, query: str, k: int = 5, score_threshold: float = 0.3
+        self, query: str, k: int = 5, score_threshold: float = 0.2
     ) -> List[Tuple[Document, float]]:
         """混合检索：两路并行 + RRF融合 + 父子分块提升。
 

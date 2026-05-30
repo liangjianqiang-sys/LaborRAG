@@ -1,6 +1,6 @@
 # LaborRAG - 劳动法智能问答系统
 
-基于 RAG（检索增强生成）技术的劳动法领域智能问答系统。用户输入劳动法问题，系统自动检索法条、生成专业回答，并支持金额计算、法条对比、多轮追问。内置三元组评估体系（RAGAS + 检索指标 + 响应指标）量化回答质量。
+基于 Agentic RAG（检索增强生成）技术的劳动法领域智能问答系统。用户输入劳动法问题，系统自动检索法条、生成专业回答，并支持金额计算、法条对比、多轮追问。内置三元组评估体系（RAGAS + 检索指标 + 响应指标）量化回答质量。
 
 ## 系统功能
 
@@ -14,9 +14,10 @@
 
 - **来源追溯**：每个回答附带参考法条来源、相关度分数，可追溯可验证
 - **多轮对话**：支持追问，上下文感知查询改写自动补全追问为完整问题（如先问"工作5年被违法辞退赔偿金怎么算"，再问"假设月薪一万元呢"→自动改写为"工作5年被违法辞退赔偿金，月薪1万元"）
+- **对话历史持久化**：前端 localStorage + 后端 JSON 文件双层持久化，后端重启不丢失上下文
 - **缺参引导**：计算类问题缺少参数时，返回公式框架+法条依据+缺失参数提示，而非直接拒绝
-- **幻觉防护**：统一规则禁止编造法条，Validator验证引用法条是否在资料中，未通过自动追加警告
-- **人性化回答**：7条风格规则（先共情→先结论→通俗解释+举例→实操建议→口语化→规避过时法条），告别法条搬运工式回答
+- **幻觉防护**：统一规则禁止编造法条 + Validator验证法条真实性 + 输出护栏风险提示追加
+- **人性化回答**：13条风格规则（先结论→通俗解释→克制补充→逐句标注来源→法条竞合处理等），告别法条搬运工式回答
 
 ### 📚 知识库管理
 
@@ -27,10 +28,9 @@
 
 ### 📊 三元组评估体系
 
-- **三元组核心**：context_relevancy（上下文相关性）/ faithfulness（忠实度）/ answer_relevancy（答案相关性）
+- **RAGAS指标**：faithfulness（忠实度）/ context_precision（上下文精确度）/ context_recall（上下文召回率）
 - **检索指标**：Precision@5 / Recall@5 / F1@5 / MRR / MAP，基于 relevant_articles 标注匹配
 - **响应指标**：ROUGE-L / BLEU / 幻觉率 / 完整性（LLM评估）
-- **RAGAS原始指标**：faithfulness / answer_relevancy / context_precision / context_recall
 - **分类型统计**：按 retrieve/calculate/compare 三类分别统计指标
 - **可观测性面板**：检索质量 / 生成质量 / 业务指标 三维度概览
 - **Bad Case追踪**：得分最低题目快速定位问题
@@ -58,6 +58,7 @@
 ### 🖥️ 前端界面
 
 - **四页面布局**：问答 / 知识库 / 评估 / 设置，顶部导航切换
+- **历史对话侧边栏**：按日期分组、可折叠、支持新建/切换/删除对话，localStorage持久化
 - **CRAG步骤可视化**：折叠面板实时展示工作流7-10个执行步骤
 - **参考来源折叠**：默认收起，点击展开查看详情
 - **法律免责声明**：界面明确提示回答仅供参考
@@ -102,14 +103,16 @@
 
 检索链路: 上下文改写 → HyDE查询增强 → Hybrid Search(向量+BM25+RRF)
         → Reranker精排 → 上下文压缩 → 父子分块提升
+
+记忆链路: 前端localStorage(长期) + 后端JSON持久化(长期) + 前端传history(兜底)
 ```
 
 ## 技术栈
 
 | 层级 | 技术 | 说明 |
 |------|------|------|
-| LLM | 百炼 qwen3.7-max（生成）/ qwen3.6-plus（评估） | 大语言模型 |
-| Embedding | BGE-M3 (本地) | 中文向量模型，文本向量化 |
+| LLM | 百炼 qwen3.7-max（生成）/ qwen3.6-35b-a3b（评估） | 大语言模型 |
+| Embedding | BGE-M3 (本地CPU) | 中文向量模型，文本向量化 |
 | Reranker | BGE-Reranker-v2-m3 | Cross-Encoder重排序模型 |
 | 向量库 | FAISS | 向量存储与检索 |
 | 关键词检索 | BM25 + jieba | 中文分词关键词匹配 |
@@ -117,6 +120,7 @@
 | CRAG框架 | LangGraph | V3 状态图自我纠错工作流 |
 | Agent框架 | LangGraph | V4 多Agent协作工作流 |
 | 评估 | RAGAS + 自研指标 | 三元组评估体系（检索/响应/RAGAS） |
+| 对话持久化 | JSON文件 (D:/LaborRAG_data/conversations/) | 后端对话历史持久化 |
 | 后端 | FastAPI + Uvicorn | API服务 |
 | 前端 | React + TypeScript + TailwindCSS + React Router | 多页面用户界面 |
 
@@ -127,12 +131,13 @@ LaborRAG/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py              # FastAPI入口
-│   │   ├── config.py            # 配置管理（含V2检索策略配置）
+│   │   ├── config.py            # 配置管理（含检索策略+对话持久化路径配置）
 │   │   ├── core/
 │   │   │   ├── embeddings.py    # Embedding模型初始化
 │   │   │   ├── document_loader.py # 文档加载
 │   │   │   ├── vectorstore.py   # FAISS向量库管理（支持切分策略）
 │   │   │   ├── text_splitter.py # V2 法条结构化切分器
+│   │   │   ├── conversation.py  # 对话历史管理器（JSON文件持久化）
 │   │   │   ├── retriever/       # 检索层
 │   │   │   │   ├── base.py      # 抽象基类
 │   │   │   │   ├── vector.py    # V1 向量检索
@@ -143,13 +148,14 @@ LaborRAG/
 │   │   │   ├── generator/       # 生成层
 │   │   │   │   ├── base.py      # 抽象基类
 │   │   │   │   ├── prompts.py    # 共享回答风格规则（7条人性化规则）
+│   │   │   │   ├── guardrails.py # 输出护栏（14条法律风险提示规则，评估模式自动跳过）
 │   │   │   │   ├── simple_chain.py # V1/V2 LCEL链
 │   │   │   │   ├── crag_graph.py  # V3 Adaptive RAG状态图
 │   │   │   │   └── agent_graph.py  # V4 Agentic RAG多Agent
-│   │   │   └── rag_engine.py    # RAG引擎（自动选择检索策略）
+│   │   │   └── rag_engine.py    # RAG引擎（自动选择检索策略+多轮对话上下文）
 │   │   ├── evaluation/          # 三元组评估体系
 │   │   │   ├── utils.py          # 公共工具(sanitize_floats/strip_per_query/parallel_map/file_lock)
-│   │   │   ├── eval_dataset.py  # 24个标注问答对(含question_type+relevant_articles)
+│   │   │   ├── eval_dataset.py  # 标注问答对(含question_type+relevant_articles)
 │   │   │   ├── eval_runner.py   # 三阶段执行器(并发生成→检索指标→RAGAS+响应指标)
 │   │   │   ├── eval_persistent.py # 断点续评管理器(持久化/续评/停止/删除/超时保护)
 │   │   │   ├── eval_report.py   # 评估报告+三维度对比+BadCase+可观测性
@@ -166,23 +172,29 @@ LaborRAG/
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx              # 多页面路由布局
-│   │   ├── api.ts               # API客户端（含V2评估接口）
+│   │   ├── api.ts               # API客户端（含评估接口+对话历史传递）
 │   │   ├── main.tsx             # React入口
+│   │   ├── index.css            # 全局样式+品牌色+动画
 │   │   ├── pages/               # 页面组件
-│   │   │   ├── ChatPage.tsx     # 问答页面
+│   │   │   ├── ChatPage.tsx     # 问答页面（侧边栏+聊天区域编排）
 │   │   │   ├── KnowledgePage.tsx # 知识库管理页面
 │   │   │   ├── EvalPage.tsx     # 评估页面(断点续评+可观测性+BadCase+对比报告)
 │   │   │   └── SettingsPage.tsx  # 系统设置页面
-│   │   └── components/          # 通用组件
-│   │       ├── ChatWindow.tsx   # 聊天窗口（含CRAG步骤面板）
-│   │       ├── MessageBubble.tsx # 消息气泡（参考来源折叠）
-│   │       └── InputBar.tsx     # 输入框
+│   │   ├── components/          # 通用组件
+│   │   │   ├── ChatWindow.tsx   # 聊天窗口（含CRAG步骤面板+历史传递）
+│   │   │   ├── ConversationSidebar.tsx # 历史对话侧边栏（日期分组/折叠/删除）
+│   │   │   ├── MessageBubble.tsx # 消息气泡（参考来源折叠）
+│   │   │   └── InputBar.tsx     # 输入框
+│   │   └── hooks/
+│   │       └── useConversations.ts # 对话状态管理hook（localStorage持久化+CRUD）
 │   ├── run.py                   # 前端启动入口
 │   ├── package.json             # 前端依赖
 │   └── vite.config.ts           # Vite配置
 ├── data/
 │   └── labor_laws/              # 劳动法文档（6部）
-├── KNOWLEDGE.md                 # 项目知识文档
+├── D:/LaborRAG_data/            # 运行时数据（独立于项目目录）
+│   ├── vector_store/            # FAISS向量库
+│   └── conversations/           # 对话历史JSON文件
 └── README.md
 ```
 
@@ -238,7 +250,7 @@ python frontend/run.py
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| POST | `/api/v1/chat` | 智能问答 |
+| POST | `/api/v1/chat` | 智能问答（支持conversation_id+history多轮对话） |
 | GET | `/api/v1/knowledge-base/status` | 知识库状态 |
 | POST | `/api/v1/knowledge-base/build` | 构建/重建知识库 |
 | POST | `/api/v1/documents/upload` | 上传文档 |
@@ -286,8 +298,12 @@ RERANKER_MODEL_NAME=BAAI/bge-reranker-v2-m3  # 重排序模型
 RERANK_TOP_K=5              # 重排序返回数量
 COMPRESSION_THRESHOLD=0.5    # 上下文压缩相似度阈值（低于此值丢弃）
 RAG_MODE=agent               # RAG模式: simple | crag | agent
+RETRIEVAL_VALIDATION=false    # 两步生成验证（grader），关闭可减少误拒
 EVAL_MAX_CONCURRENT=2        # 评估答案生成并发度（默认4，API限流时降低）
 EVAL_TASK_TIMEOUT=1800       # 评估任务超时秒数（默认30分钟）
+RAGAS_MODEL_NAME=qwen3.6-35b-a3b  # RAGAS评分模型
+RAGAS_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1  # RAGAS评分API
+CONVERSATION_DATA_PATH=D:/LaborRAG_data/conversations  # 对话历史持久化路径
 ```
 
 ## 渐进式开发路线
@@ -315,7 +331,7 @@ EVAL_TASK_TIMEOUT=1800       # 评估任务超时秒数（默认30分钟）
 ✅ 前端步骤展示（CRAG工作流7-10个步骤可视化）
 ✅ 参考来源完整（带评分和法律出处）
 
-## V4 端到端测试成功标准
+### V4 端到端测试成功标准
 ✅ Router意图分类准确（法条查询/计算类/对比类正确分发）
 ✅ Calculator精确计算（加班费/经济补偿金/赔偿金等，结果精确；缺参时返回公式框架）
 ✅ Comparator对比分析（双组检索+结构化对比表）
@@ -327,11 +343,16 @@ EVAL_TASK_TIMEOUT=1800       # 评估任务超时秒数（默认30分钟）
 ✅ Agent降级兜底（异常时自动降级到simple模式）
 ✅ 评估系统异步运行（后台线程+前端轮询+页面恢复状态）
 ✅ 断点续评+并发评估（持久化存储+手动续评+并发答案生成）
+✅ 历史对话侧边栏（日期分组/折叠/新建/切换/删除）
+✅ 对话历史双层持久化（前端localStorage + 后端JSON文件）
+✅ 前端传历史兜底（后端重启后仍能保持多轮上下文）
+✅ Faithfulness优化（contexts截断修复+护栏跳过+验证警告移除+grader关闭）
 ⬜ V1-V4四版对比实验
 
 ## 注意事项
 
 - FAISS 底层 C++ 不支持中文路径，向量库默认存储在 `D:/LaborRAG_data/vector_store`
+- 对话历史默认存储在 `D:/LaborRAG_data/conversations/`，每个会话一个JSON文件
 - BGE-M3 模型首次运行需下载约 2GB，后续从本地缓存加载
 - BGE-Reranker-v2-m3 首次运行需下载约 560MB，后续从本地缓存加载
 - 国内环境建议设置 `HF_ENDPOINT=https://hf-mirror.com` 加速模型下载
@@ -341,4 +362,3 @@ EVAL_TASK_TIMEOUT=1800       # 评估任务超时秒数（默认30分钟）
 - 评估并发度建议设为2-4，过高可能触发API限流（`EVAL_MAX_CONCURRENT`）
 - 后端重启后未完成任务自动标记为「已暂停」，需手动点击「继续」恢复
 - 本系统回答仅供参考，不构成法律意见，具体问题请咨询专业律师
-- 详细技术知识参见 [KNOWLEDGE.md](KNOWLEDGE.md)

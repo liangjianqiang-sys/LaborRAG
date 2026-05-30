@@ -11,7 +11,7 @@ class VectorRetriever(BaseRetriever):
         self.vector_store_manager = vector_store_manager
 
     def retrieve(
-        self, query: str, k: int = 5, score_threshold: float = 0.3
+        self, query: str, k: int = 5, score_threshold: float = 0.2
     ) -> List[Tuple[Document, float]]:
         if not self.is_ready():
             return []

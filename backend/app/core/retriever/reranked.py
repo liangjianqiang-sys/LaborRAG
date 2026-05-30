@@ -1,9 +1,31 @@
+import threading
 from typing import List, Tuple
 from langchain_core.documents import Document
 from app.core.retriever.base import BaseRetriever
 from app.core.retriever.hybrid import HybridRetriever
 from app.core.vectorstore import extract_article_ref
+from app.core.retriever.query_enhance import enhance_query
 from app.config import settings
+
+# ── 模块级Reranker单例（避免并发时重复加载560MB模型）──
+_reranker_instance = None
+_reranker_lock = threading.Lock()
+
+
+def _get_reranker_singleton():
+    """获取全局Reranker单例（线程安全，双重检查锁）。"""
+    global _reranker_instance
+    if _reranker_instance is None:
+        with _reranker_lock:
+            if _reranker_instance is None:
+                import os
+                from sentence_transformers import CrossEncoder
+                if settings.HF_ENDPOINT and "mirror" in settings.HF_ENDPOINT:
+                    os.environ["HF_ENDPOINT"] = settings.HF_ENDPOINT
+                print(f"Loading reranker model: {settings.RERANKER_MODEL_NAME}...")
+                _reranker_instance = CrossEncoder(settings.RERANKER_MODEL_NAME, device="cpu")
+                print("Reranker model loaded.")
+    return _reranker_instance
 
 
 class RerankedRetriever(BaseRetriever):
@@ -15,27 +37,26 @@ class RerankedRetriever(BaseRetriever):
 
     def __init__(self, hybrid_retriever: HybridRetriever):
         self.hybrid_retriever = hybrid_retriever
-        self._reranker = None
 
     def _get_reranker(self):
-        """懒加载Reranker模型。"""
-        if self._reranker is None:
-            import os
-            from sentence_transformers import CrossEncoder
-            # 设置HuggingFace镜像源（国内加速）
-            if settings.HF_ENDPOINT and "mirror" in settings.HF_ENDPOINT:
-                os.environ["HF_ENDPOINT"] = settings.HF_ENDPOINT
-            print(f"Loading reranker model: {settings.RERANKER_MODEL_NAME}...")
-            self._reranker = CrossEncoder(settings.RERANKER_MODEL_NAME, device="cpu")
-            print("Reranker model loaded.")
-        return self._reranker
+        """获取Reranker模型（模块级单例，线程安全）。"""
+        return _get_reranker_singleton()
 
     def retrieve(
-        self, query: str, k: int = 5, score_threshold: float = 0.3
+        self, query: str, k: int = 5, score_threshold: float = 0.2,
+        rerank_top_k: int = None,
     ) -> List[Tuple[Document, float]]:
-        """混合检索 + 重排序 + 父子分块提升。"""
+        """混合检索 + 重排序 + 父子分块提升。
+
+        Args:
+            rerank_top_k: 重排序后返回数量，覆盖settings.RERANK_TOP_K。
+                          简单查询传3，复杂查询传5，None则用配置默认值。
+        """
         if not self.is_ready():
             return []
+
+        # 0. 查询增强：口语化关键词→法言法语+法条编号
+        enhanced_query = enhance_query(query)
 
         # 1. 先用Hybrid检索获取候选集（扩大到Top20）
         #    注意：HybridRetriever内部已做子块→父块提升，
@@ -43,17 +64,17 @@ class RerankedRetriever(BaseRetriever):
         #    所以这里绕过Hybrid的提升，直接获取原始子块结果
         candidate_k = min(k * 4, 20)
 
-        # 元数据过滤：自动提取法条编号
-        filter_dict = extract_article_ref(query)
+        # 元数据过滤：用增强查询提取法条编号和法律名（query_enhance注入的法条编号也会被捕获）
+        filter_dict = extract_article_ref(enhanced_query)
 
-        # 获取向量检索的原始子块结果（未提升）
+        # 获取向量检索的原始子块结果（用增强查询提高命中率）
         vector_mgr = self.hybrid_retriever.vector_retriever.vector_store_manager
         raw_vector_results = vector_mgr.similarity_search_with_score(
-            query, k=candidate_k, score_threshold=0.0, filter_dict=filter_dict
+            enhanced_query, k=candidate_k, score_threshold=0.0, filter_dict=filter_dict
         )
-        # 获取BM25的原始子块结果（同样支持元数据过滤）
+        # 获取BM25的原始子块结果（同样用增强查询）
         raw_bm25_results = self.hybrid_retriever.bm25_retriever.retrieve(
-            query, k=candidate_k, score_threshold=0.0, filter_dict=filter_dict
+            enhanced_query, k=candidate_k, score_threshold=0.0, filter_dict=filter_dict
         )
 
         # RRF融合（在子块级别）
@@ -78,7 +99,7 @@ class RerankedRetriever(BaseRetriever):
         if not candidates:
             return []
 
-        # 2. Cross-Encoder重排序（在子块级别，排序更精准）
+        # 2. Cross-Encoder重排序（用原始query，CrossEncoder理解自然语言更好）
         reranker = self._get_reranker()
         pairs = [(query, doc.page_content) for doc, _ in candidates]
         scores = reranker.predict(pairs)
@@ -87,13 +108,18 @@ class RerankedRetriever(BaseRetriever):
         scored_results = list(zip(candidates, scores))
         scored_results.sort(key=lambda x: x[1], reverse=True)
 
-        # 4. 取Top-K（仍在子块级别）
+        # 4. 取Top-K（仍在子块级别，受RERANK_TOP_K上限约束）
+        #    CrossEncoder原始分数含义：>0 相关，<0 不相关
+        #    直接用原始分数阈值过滤，比归一化后用SCORE_THRESHOLD更准确
+        effective_k = min(k, rerank_top_k if rerank_top_k is not None else settings.RERANK_TOP_K)
+        rerank_threshold = settings.RERANK_SCORE_THRESHOLD
         results = []
-        for (doc, _old_score), rerank_score in scored_results[:k]:
-            # Cross-Encoder分数归一化到0-1
+        for (doc, _old_score), rerank_score in scored_results[:effective_k]:
+            if rerank_score < rerank_threshold:
+                continue
+            # 归一化到0-1用于展示（sigmoid映射，仅用于返回分数，不影响过滤）
             normalized = 1.0 / (1.0 + max(0, -rerank_score))
-            if normalized >= score_threshold:
-                results.append((doc, round(normalized, 4)))
+            results.append((doc, round(normalized, 4)))
 
         # 5. 层次化父子分块：将重排序后的子块提升为完整父块
         return vector_mgr.promote_children_to_parents(results)

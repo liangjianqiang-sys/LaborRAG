@@ -11,6 +11,7 @@ class BaseGenerator(ABC):
         self,
         question: str,
         context_docs: List[Tuple[Document, float]],
+        skip_guardrails: bool = False,
     ) -> str:
         """基于检索到的文档生成回答。"""
         pass

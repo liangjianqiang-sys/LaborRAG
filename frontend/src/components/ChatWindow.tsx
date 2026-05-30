@@ -3,17 +3,8 @@ import ReactMarkdown from 'react-markdown'
 import { Plus, ChevronDown, ChevronRight, Zap, Sparkles, Scale, Gavel, BookOpen, Brain, Calculator, AlertCircle, FileWarning } from 'lucide-react'
 import MessageBubble from './MessageBubble'
 import InputBar from './InputBar'
-import { sendChat, type SourceDocument } from '../api'
-
-interface Message {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  sources?: SourceDocument[]
-  cragSteps?: string[]
-  rewrittenQuestion?: string
-  ragMode?: string
-}
+import { sendChat, type ChatHistoryItem } from '../api'
+import type { Message, Conversation } from '../hooks/useConversations'
 
 const SUGGESTED_QUESTIONS = [
   { icon: Gavel, label: '法条查询', color: 'brand', text: '劳动合同法第47条怎么规定的？' },
@@ -49,43 +40,55 @@ const RAG_MODE_COLORS: Record<string, string> = {
   simple: 'bg-brand-50 text-brand-700 border-brand-200',
   crag: 'bg-accent-50 text-accent-600 border-accent-200',
   agent: 'bg-cyan-50 text-cyan-600 border-cyan-100',
+  vector: 'bg-violet-50 text-violet-600 border-violet-200',
+  hybrid: 'bg-amber-50 text-amber-600 border-amber-200',
+  reranked: 'bg-emerald-50 text-emerald-600 border-emerald-200',
 }
 
 const RAG_MODE_LABELS: Record<string, string> = {
   simple: 'V1/V2',
   crag: 'V3 CRAG',
   agent: 'V4 Agent',
+  vector: 'V1 向量',
+  hybrid: 'V2 混合',
+  reranked: 'V2 重排序',
 }
 
-export default function ChatWindow() {
-  const [messages, setMessages] = useState<Message[]>([])
+interface ChatWindowProps {
+  conversation: Conversation | null
+  onAddMessage: (message: Message) => void
+  onSetBackendConversationId: (id: string) => void
+  onNewChat: () => void
+}
+
+export default function ChatWindow({ conversation, onAddMessage, onSetBackendConversationId, onNewChat }: ChatWindowProps) {
+  const messages = conversation?.messages ?? []
+  const conversationId = conversation?.conversationId
   const [loading, setLoading] = useState(false)
-  const [conversationId, setConversationId] = useState<string | undefined>(undefined)
   const [isThinking, setIsThinking] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
-
-  const handleNewChat = () => {
-    setMessages([])
-    setConversationId(undefined)
-  }
+  }, [messages.length])
 
   const handleSend = async (text: string) => {
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text }
-    setMessages((prev) => [...prev, userMsg])
+    onAddMessage(userMsg)
     setLoading(true)
     setIsThinking(true)
 
-    // Simulate thinking phases
     const thinkingTimer = setTimeout(() => setIsThinking(false), 800)
 
     try {
-      const res = await sendChat({ question: text, conversation_id: conversationId })
+      // 构建最近6轮对话历史（轻量兜底：后端重启后仍能保持上下文）
+      const history: ChatHistoryItem[] = messages
+        .slice(-12)  // 最近6轮=12条消息
+        .map((m) => ({ role: m.role, content: m.content }))
+
+      const res = await sendChat({ question: text, conversation_id: conversationId, history })
       if (!conversationId) {
-        setConversationId(res.conversation_id)
+        onSetBackendConversationId(res.conversation_id)
       }
       const aiMsg: Message = {
         id: res.conversation_id,
@@ -95,15 +98,17 @@ export default function ChatWindow() {
         cragSteps: res.crag_steps,
         rewrittenQuestion: res.rewritten_question,
         ragMode: res.rag_mode,
+        confidence: res.confidence,
+        disclaimer: res.disclaimer,
       }
-      setMessages((prev) => [...prev, aiMsg])
+      onAddMessage(aiMsg)
     } catch (err) {
       const errMsg: Message = {
         id: 'err-' + Date.now(),
         role: 'assistant',
         content: `抱歉，请求出错：${(err as Error).message}`,
       }
-      setMessages((prev) => [...prev, errMsg])
+      onAddMessage(errMsg)
     } finally {
       setLoading(false)
       clearTimeout(thinkingTimer)
@@ -117,10 +122,10 @@ export default function ChatWindow() {
         <div className="flex items-center justify-between px-5 lg:px-6 py-2.5 bg-white/70 border-b border-brand-100/40 backdrop-blur-sm">
           <div className="flex items-center gap-2 text-xs text-slate-400">
             <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-glow-pulse" />
-            对话ID: <span className="font-mono">{conversationId?.slice(0, 8)}...</span>
+            对话ID: <span className="font-mono">{conversationId?.slice(0, 8) || conversation?.id?.slice(0, 8)}...</span>
           </div>
           <button
-            onClick={handleNewChat}
+            onClick={onNewChat}
             className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-brand-600 px-2.5 py-1.5 rounded-md hover:bg-brand-50 transition-all duration-200"
           >
             <Plus size={14} strokeWidth={2} />
@@ -147,26 +152,45 @@ export default function ChatWindow() {
                   )}
                 </MessageBubble>
 
-                {/* RAG 模式标签 + 步骤面板 */}
+                {/* RAG 模式标签 + 置信度 + 步骤面板 */}
                 {msg.role === 'assistant' && (
                   <div className="ml-12 lg:ml-14 mt-1.5 space-y-1">
-                    {msg.ragMode && RAG_MODE_LABELS[msg.ragMode] && (
-                      <span
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border ${
-                          RAG_MODE_COLORS[msg.ragMode] || 'bg-gray-100 text-gray-600 border-gray-200'
-                        }`}
-                      >
-                        <Zap size={10} />
-                        {RAG_MODE_LABELS[msg.ragMode]}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {msg.ragMode && RAG_MODE_LABELS[msg.ragMode] && (
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border ${
+                            RAG_MODE_COLORS[msg.ragMode] || 'bg-gray-100 text-gray-600 border-gray-200'
+                          }`}
+                        >
+                          <Zap size={10} />
+                          {RAG_MODE_LABELS[msg.ragMode]}
+                        </span>
+                      )}
+                      {msg.confidence != null && msg.confidence > 0 && (
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border ${
+                          msg.confidence >= 0.7 ? 'bg-emerald-50 text-emerald-600 border-emerald-200'
+                          : msg.confidence >= 0.5 ? 'bg-amber-50 text-amber-600 border-amber-200'
+                          : 'bg-red-50 text-red-600 border-red-200'
+                        }`}>
+                          <Scale size={10} />
+                          置信度 {Math.round(msg.confidence * 100)}%
+                        </span>
+                      )}
+                    </div>
                     {msg.cragSteps && msg.cragSteps.length > 0 && (
                       <CragStepsPanel steps={msg.cragSteps} rewrittenQuestion={msg.rewrittenQuestion} />
                     )}
-                    {/* 免责声明 */}
-                    <p className="text-[11px] text-amber-500/80 ml-0.5">
-                      ⚠️ 仅供参考，不构成法律意见
-                    </p>
+                    {/* 免责声明 + 低置信度警告 */}
+                    {msg.disclaimer && (
+                      <p className="text-[11px] text-amber-500/80 ml-0.5">
+                        ⚠️ 仅供参考，不构成法律意见
+                      </p>
+                    )}
+                    {msg.confidence != null && msg.confidence < 0.5 && (
+                      <p className="text-[11px] text-red-500/80 ml-0.5">
+                        ⚠️ 系统对该回答的置信度较低，建议咨询专业律师确认
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -204,7 +228,7 @@ export default function ChatWindow() {
       </div>
 
       {/* ── 输入栏 ── */}
-      <InputBar onSend={handleSend} disabled={loading} />
+      <InputBar onSend={handleSend} disabled={loading || !conversation} />
     </div>
   )
 }

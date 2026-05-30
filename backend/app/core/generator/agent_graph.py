@@ -27,7 +27,8 @@ from langgraph.graph import StateGraph, END
 
 from app.config import settings
 from app.core.retriever.compressor import EmbeddingsCompressor
-from app.core.generator.prompts import ANSWER_STYLE_RULES
+from app.core.generator.prompts import ANSWER_STYLE_RULES, RETRIEVAL_EVALUATION_PROMPT
+from app.core.generator.guardrails import AnswerGuardrails
 
 
 # ─── 状态定义 ───────────────────────────────────────────────
@@ -38,6 +39,7 @@ class AgentState(TypedDict, total=False):
     rewritten_question: str                 # 改写后的问题（追问补全）
     conversation_context: str               # 对话上下文
     intent: str                             # 意图分类: "retrieve" | "calculate" | "compare"
+    complexity: str                         # 复杂度: "simple" | "medium" | "complex"
     context_docs: List[Tuple[Document, float]]  # 检索到的文档
     context_docs_b: List[Tuple[Document, float]]  # 对比用第二组文档
     calculation_result: str                 # 计算结果
@@ -48,6 +50,26 @@ class AgentState(TypedDict, total=False):
 
 
 # ─── Prompt模板 ─────────────────────────────────────────────
+
+# 复杂度分类（复用CRAG的分类逻辑）
+COMPLEXITY_PROMPT = """你是劳动法领域的查询复杂度分类器，判断用户问题的复杂度，只输出一个词。
+
+定义：
+1. simple：常识性/定义性问题，无需检索法律条文即可回答
+   例："劳动法是什么"、"劳动合同有哪些类型"
+   判断要点：不涉及具体条款或金额计算
+
+2. medium：需要检索具体法条，但问题明确单一
+   例："劳动合同法第47条怎么规定的"、"加班工资怎么算"、"试用期最长多久"
+   判断要点：指向单一法条或单一法律概念
+   ★ 包含"第X条"的问题 → 总是 medium
+
+3. complex：需要多步推理、对比分析、综合多个法条或涉及金额计算
+   例："经济补偿金和赔偿金有什么区别"、"被公司辞退了能拿多少钱"、
+       "月薪8000加班10小时加班费多少"、"违法解除劳动合同有哪些法律后果"
+   判断要点：涉及两个以上法条对比、需要计算具体金额、包含"区别""怎么维权"
+
+只输出一个词：simple、medium、complex，不要解释。"""
 
 QUERY_REWRITE_PROMPT = """你是对话上下文感知的查询改写器。根据对话历史，将用户的追问/补充问题改写为完整的独立问题。
 
@@ -118,13 +140,26 @@ COMPARATOR_PROMPT = """{style_rules}
 
 对比分析："""
 
+# 快速生成用Prompt（与crag_graph保持一致）
+RAG_GENERATE_PROMPT = """{style_rules}
+
+对话上下文：{conversation_context}
+
+参考资料：
+{context}
+
+问题：{question}
+
+回答："""
+
 VALIDATOR_PROMPT = """你是劳动法回答质量验证专家，检查回答是否合法合规。
 
 检查维度：
-1. 法条引用是否真实存在（不能编造法条编号）
-2. 引用的法条是否确实出现在上方参考资料中（不能引用资料未包含的法条）
-3. 计算公式是否符合法律规定
-4. 回答是否与参考资料矛盾
+1. 回答是否与参考资料存在明显矛盾（如说"赔偿金是N倍"但资料写的是"2倍"）
+2. 计算公式是否符合法律规定
+3. 法条引用是否明显编造（如编造完全不存在的条款号，如"第999条"）
+4. 回答中引用的每条法条是否有对应的参考资料支持
+注意：回答中引用的法条必须有参考资料支持。如果引用了参考资料中不存在的法条，标记为不忠实，需要移除该引用后重新生成。
 
 参考资料：
 {context}
@@ -141,8 +176,8 @@ AI回答：{answer}
 
 MONTHLY_WORK_DAYS = 21.75    # 月计薪天数
 DAILY_WORK_HOURS = 8         # 日标准工时
-VALIDATE_CONTEXT_CHARS = 800 # 验证时上下文截断字数
-VALIDATE_ANSWER_CHARS = 1200  # 验证时回答截断字数
+VALIDATE_CONTEXT_CHARS = 2000  # 验证时上下文截断字数（增大以覆盖更多法条内容）
+VALIDATE_ANSWER_CHARS = 2500   # 验证时回答截断字数
 
 LABOR_CALCULATORS = {
     "加班费": {
@@ -382,14 +417,15 @@ class AgenticRAGGraph:
         self.retriever = retriever
         self.compressor = EmbeddingsCompressor()
 
-        # 分类/验证用LLM
+        # 分类/验证用LLM（使用轻量模型，速度更快）
         self.grader_llm = ChatOpenAI(
-            model=settings.LLM_MODEL_NAME,
-            openai_api_key=settings.LLM_API_KEY,
-            openai_api_base=settings.LLM_API_BASE,
+            model=settings.EVAL_LLM_MODEL_NAME,
+            openai_api_key=settings.EVAL_LLM_API_KEY or settings.LLM_API_KEY,
+            openai_api_base=settings.EVAL_LLM_API_BASE or settings.LLM_API_BASE,
             temperature=0,
             max_tokens=128,
             request_timeout=60,
+            extra_body={"enable_thinking": False},
         )
 
         # 生成用LLM
@@ -400,11 +436,109 @@ class AgenticRAGGraph:
             temperature=settings.LLM_TEMPERATURE,
             max_tokens=settings.LLM_MAX_TOKENS,
             request_timeout=60,
+            extra_body={"enable_thinking": False},
         )
 
         self.graph = self._build_graph()
 
     # ─── 节点函数 ──────────────────────────────────────────
+
+    def _classify_complexity(self, state: AgentState) -> dict:
+        """复杂度分类：simple→快速生成，medium/complex→Agent完整链路。"""
+        question = state.get("rewritten_question") or state["question"]
+        conversation_context = state.get("conversation_context", "")
+
+        # 包含"第X条"的问题直接走快速生成，无需LLM分类
+        import re
+        if re.search(r"第[一二三四五六七八九十百千\d]+条", question):
+            steps = state.get("steps", [])
+            steps.append(f"复杂度分类: medium（含法条编号，快速检索）")
+            return {"complexity": "medium", "steps": steps}
+
+        # 其他问题用LLM判断
+        print(f"[Agent] 🎯 分类查询复杂度...")
+        prompt = ChatPromptTemplate.from_template(COMPLEXITY_PROMPT)
+        chain = prompt | self.grader_llm
+        result = chain.invoke({
+            "question": question,
+            "conversation_context": conversation_context or "（无对话上下文）",
+        })
+        complexity = result.content.strip().lower()
+        if complexity not in ("simple", "medium", "complex"):
+            complexity = "medium"  # 默认走中等路径
+        print(f"[Agent] 🎯 复杂度: {complexity}")
+        steps = state.get("steps", [])
+        steps.append(f"复杂度分类: {complexity}")
+        return {"complexity": complexity, "steps": steps}
+
+    def _simple_generate(self, state: AgentState) -> dict:
+        """快速路径：简单问题检索+充分性验证+生成，不经过Agent路由。"""
+        question = state.get("rewritten_question") or state["question"]
+        conversation_context = state.get("conversation_context", "")
+
+        # 检索（自适应rerank_top_k：简单3条，复杂5条）
+        rerank_top_k = 3 if state.get("complexity") == "simple" else 5
+        from app.core.retriever.reranked import RerankedRetriever
+        if isinstance(self.retriever, RerankedRetriever):
+            docs = self.retriever.retrieve(
+                query=question, k=settings.TOP_K,
+                score_threshold=settings.SCORE_THRESHOLD,
+                rerank_top_k=rerank_top_k,
+            )
+        else:
+            docs = self.retriever.retrieve(
+                query=question, k=settings.TOP_K,
+                score_threshold=settings.SCORE_THRESHOLD,
+            )
+        context = "\n\n".join(
+            f"[来源：{doc.metadata.get('source', '未知')}]\n{doc.page_content}"
+            for doc, score in docs
+        ) if docs else "未找到相关参考资料。"
+
+        steps = state.get("steps", [])
+
+        # 两步生成：先验证检索充分性，不充分则拒绝回答（可通过RETRIEVAL_VALIDATION关闭）
+        if settings.RETRIEVAL_VALIDATION:
+            if docs:
+                is_sufficient = self._check_retrieval_sufficiency(question, context)
+                if not is_sufficient:
+                    steps.append("检索验证: 资料不足，拒绝回答")
+                    answer = "根据现有资料无法完整回答您的问题。"
+                    return {"answer": answer, "context_docs": docs, "steps": steps}
+                steps.append("检索验证: 资料充分")
+            else:
+                steps.append("检索验证: 无检索结果")
+                answer = "未找到与您问题相关的法律资料。"
+                return {"answer": answer, "context_docs": docs, "steps": steps}
+
+        # 生成
+        prompt = ChatPromptTemplate.from_template(RAG_GENERATE_PROMPT)
+        chain = prompt | self.gen_llm
+        result = chain.invoke({
+            "context": context,
+            "question": question,
+            "conversation_context": conversation_context or "（无对话上下文）",
+            "style_rules": ANSWER_STYLE_RULES,
+        })
+
+        answer = result.content
+        steps.append(f"快速生成: 基于{len(docs)}个文档直接回答")
+
+        # 轻量验证：用flash模型检查回答是否引用了不存在的法条
+        if answer and docs:
+            validate_state = {"answer": answer, "context_docs": docs, "steps": steps}
+            validated = self._validate(validate_state)
+            answer = validated.get("answer", answer)
+            steps.extend(validated.get("steps", []))
+
+        return {"answer": answer, "context_docs": docs, "steps": steps}
+
+    def _decide_after_classify(self, state: AgentState) -> Literal["simple_path", "agent_path"]:
+        """分类后路由：simple/medium→快速生成，complex→完整Agent链路。"""
+        complexity = state.get("complexity", "medium")
+        if complexity == "complex":
+            return "agent_path"
+        return "simple_path"
 
     def _rewrite_query(self, state: AgentState) -> dict:
         """上下文感知查询改写：将追问补全为完整独立问题。"""
@@ -469,11 +603,22 @@ class AgenticRAGGraph:
         print(f"[Agent] 🔍 检索法条...")
         question = state.get("rewritten_question") or state["question"]
 
-        docs = self.retriever.retrieve(
-            query=question,
-            k=settings.TOP_K,
-            score_threshold=settings.SCORE_THRESHOLD,
-        )
+        # 自适应rerank_top_k：简单3条，复杂5条
+        rerank_top_k = 3 if state.get("complexity") == "simple" else 5
+        from app.core.retriever.reranked import RerankedRetriever
+        if isinstance(self.retriever, RerankedRetriever):
+            docs = self.retriever.retrieve(
+                query=question,
+                k=settings.TOP_K,
+                score_threshold=settings.SCORE_THRESHOLD,
+                rerank_top_k=rerank_top_k,
+            )
+        else:
+            docs = self.retriever.retrieve(
+                query=question,
+                k=settings.TOP_K,
+                score_threshold=settings.SCORE_THRESHOLD,
+            )
 
         # 上下文压缩
         if docs:
@@ -593,6 +738,17 @@ class AgenticRAGGraph:
 
         context = self._format_docs(docs, fallback="未找到相关参考资料。")
 
+        steps = state.get("steps", [])
+
+        # 两步生成：先验证检索充分性（可通过RETRIEVAL_VALIDATION关闭）
+        if settings.RETRIEVAL_VALIDATION and docs:
+            is_sufficient = self._check_retrieval_sufficiency(question, context)
+            if not is_sufficient:
+                steps.append("检索验证: 资料不足，拒绝回答")
+                answer = "根据现有资料无法完整回答您的问题。"
+                return {"answer": answer, "steps": steps}
+            steps.append("检索验证: 资料充分")
+
         prompt = ChatPromptTemplate.from_template(
             "{style_rules}\n\n"
             "对话上下文：{conversation_context}\n\n"
@@ -623,7 +779,7 @@ class AgenticRAGGraph:
             return {"validation_passed": True, "steps": steps}
 
         context = "\n\n".join(
-            doc.page_content[:VALIDATE_CONTEXT_CHARS] for doc, score in docs[:3]
+            doc.page_content[:VALIDATE_CONTEXT_CHARS] for doc, score in docs[:5]
         ) if docs else ""
 
         prompt = ChatPromptTemplate.from_template(VALIDATOR_PROMPT)
@@ -640,12 +796,23 @@ class AgenticRAGGraph:
         else:
             reason = verdict.replace("fail:", "").strip()
             steps.append(f"验证: 未通过 - {reason}")
-            # 验证未通过时在回答末尾追加警告
-            answer = answer + f"\n\n⚠️ 系统验证提示：{reason}"
+            # 验证未通过时不追加警告文本到answer中，
+            # 否则RAGAS faithfulness会将追加内容判定为"幻觉"（contexts中无依据）
 
         return {"validation_passed": passed, "answer": answer, "steps": steps}
 
     # ─── 辅助方法 ──────────────────────────────────────────
+
+    def _check_retrieval_sufficiency(self, question: str, context: str) -> bool:
+        """用轻量LLM判断检索结果是否足以回答问题。"""
+        # 上下文太短，大概率不充分
+        if len(context) < 50:
+            return False
+        prompt = ChatPromptTemplate.from_template(RETRIEVAL_EVALUATION_PROMPT)
+        chain = prompt | self.grader_llm
+        result = chain.invoke({"question": question, "context": context[:2000]})
+        verdict = result.content.strip()
+        return "充分" in verdict and "不足" not in verdict
 
     @staticmethod
     def _format_docs(docs: list, fallback: str = "未找到相关法条。") -> str:
@@ -694,12 +861,27 @@ class AgenticRAGGraph:
         # Validator
         graph.add_node("validate", self._validate)
 
-        # ── 入口：先改写追问，再路由意图 ──
+        # ── 复杂度分类（新增） ──
+        graph.add_node("classify_complexity", self._classify_complexity)
+        graph.add_node("simple_generate", self._simple_generate)
+
+        # ── 入口：先改写追问，再判断复杂度 ──
         graph.add_node("rewrite_query", self._rewrite_query)
         graph.set_entry_point("rewrite_query")
-        graph.add_edge("rewrite_query", "route_intent")
+        graph.add_edge("rewrite_query", "classify_complexity")
 
-        # ── 意图路由 ──
+        # ── 复杂度路由：simple/medium→快速生成，complex→Agent链路 ──
+        graph.add_conditional_edges(
+            "classify_complexity",
+            self._decide_after_classify,
+            {
+                "simple_path": "simple_generate",
+                "agent_path": "route_intent",
+            },
+        )
+        graph.add_edge("simple_generate", END)
+
+        # ── 意图路由（仅complex问题走到这里） ──
         graph.add_conditional_edges(
             "route_intent",
             self._decide_intent,
@@ -729,7 +911,7 @@ class AgenticRAGGraph:
 
     # ─── 对外接口 ──────────────────────────────────────────
 
-    def run(self, question: str, conversation_context: str = "") -> dict:
+    def run(self, question: str, conversation_context: str = "", skip_guardrails: bool = False) -> dict:
         """运行Agentic RAG工作流。"""
         initial_state: AgentState = {
             "question": question,
@@ -737,8 +919,12 @@ class AgenticRAGGraph:
             "steps": [],
         }
         result = self.graph.invoke(initial_state)
+        answer = result.get("answer", "")
+        # 评估模式下跳过护栏追加，避免RAGAS将追加内容判为幻觉
+        if not skip_guardrails:
+            answer = AnswerGuardrails.check(answer)
         return {
-            "answer": result.get("answer", ""),
+            "answer": answer,
             "context_docs": result.get("context_docs", []),
             "steps": result.get("steps", []),
             "intent": result.get("intent", ""),

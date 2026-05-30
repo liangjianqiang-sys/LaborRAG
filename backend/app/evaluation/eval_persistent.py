@@ -33,7 +33,15 @@ from app.evaluation.utils import sanitize_floats, parallel_map, file_lock
 # ─── 存储根目录 ──────────────────────────────────────────────
 
 _BACKEND_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
-_PERSISTENT_ROOT = os.path.join(_BACKEND_ROOT, "evaluation_reports", "persistent")
+
+
+def _get_eval_data_dir() -> str:
+    """获取评估数据存储根目录，优先使用环境变量，回退到backend目录下。"""
+    from app.config import settings
+    return os.getenv("EVAL_DATA_DIR", os.path.join(str(settings._RUNTIME_DATA_DIR), "evaluation"))
+
+
+_PERSISTENT_ROOT = os.path.join(_get_eval_data_dir(), "persistent")
 _TASKS_DIR = os.path.join(_PERSISTENT_ROOT, "tasks")
 _RESULTS_DIR = os.path.join(_PERSISTENT_ROOT, "results")
 _REPORTS_DIR = os.path.join(_PERSISTENT_ROOT, "reports")
@@ -68,7 +76,7 @@ def _load_task(task_id: str) -> Optional[Dict[str, Any]]:
         return json.load(f)
 
 
-def _save_task(task: Dict[str, Any]):
+def save_task(task: Dict[str, Any]):
     """保存任务元数据。"""
     _ensure_dirs()
     with open(_task_path(task["task_id"]), "w", encoding="utf-8") as f:
@@ -124,7 +132,25 @@ def _clear_task_files(task_id: str):
             os.remove(p)
 
 
-def _load_all_tasks() -> List[Dict[str, Any]]:
+def _clear_legacy_report(task_id: str):
+    """删除evaluation_reports/下与该任务对应的旧格式报告文件。"""
+    report_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                              "evaluation_reports")
+    if not os.path.exists(report_dir):
+        return
+    # 旧格式报告文件名以task_id中的日期时间开头，如 eval_unknown_20260530_184606.json
+    # 匹配规则：文件名包含task_id中的时间戳部分（YYYYMMDD_HHMMSS）
+    import re
+    ts_match = re.search(r'(\d{8}_\d{6})', task_id)
+    if not ts_match:
+        return
+    ts_part = ts_match.group(1)
+    for f in os.listdir(report_dir):
+        if f.endswith(".json") and ts_part in f:
+            os.remove(os.path.join(report_dir, f))
+
+
+def load_all_tasks() -> List[Dict[str, Any]]:
     """加载所有任务元数据（模块级函数，供启动时使用）。"""
     _ensure_dirs()
     tasks = []
@@ -185,7 +211,7 @@ class PersistentEvalManager:
             "finished_at": None,
             "error": None,
         }
-        _save_task(task)
+        save_task(task)
         return task_id
 
     # ─── 任务列表查询 ──────────────────────────────────────
@@ -296,7 +322,7 @@ class PersistentEvalManager:
             "error": None,
             "updated_at": datetime.now().isoformat(),
         })
-        _save_task(task)
+        save_task(task)
         self._run_in_thread(task_id, resume=False)
 
     # ─── 重试失败条目 ──────────────────────────────────────
@@ -319,7 +345,7 @@ class PersistentEvalManager:
             task["status"] = "paused"
             task["error"] = "手动停止"
             task["updated_at"] = datetime.now().isoformat()
-            _save_task(task)
+            save_task(task)
         self._running_tasks.pop(task_id, None)
 
     # ─── 删除任务 ──────────────────────────────────────────
@@ -332,6 +358,8 @@ class PersistentEvalManager:
         if task["status"] in ("running", "scoring"):
             raise ValueError(f"任务 {task_id} 正在运行中，请先停止")
         _clear_task_files(task_id)
+        # 同时清理evaluation_reports/下的旧格式报告
+        _clear_legacy_report(task_id)
         self._running_tasks.pop(task_id, None)
 
     # ─── 获取报告 ──────────────────────────────────────────
@@ -380,7 +408,7 @@ class PersistentEvalManager:
             task.update({"status": "completed",
                          "finished_at": datetime.now().isoformat(),
                          "updated_at": datetime.now().isoformat()})
-            _save_task(task)
+            save_task(task)
             print(f"[PersistentEval] 任务 {task_id} 完成")
 
     @staticmethod
@@ -398,7 +426,7 @@ class PersistentEvalManager:
                 if idx not in task.get("failed_indices", []):
                     task.setdefault("failed_indices", []).append(idx)
             task["updated_at"] = datetime.now().isoformat()
-            _save_task(task)
+            save_task(task)
 
     # ─── 内部核心执行逻辑 ──────────────────────────────────
 
@@ -413,7 +441,7 @@ class PersistentEvalManager:
         thread.start()
 
     # 任务整体超时（秒），超时后标记为failed
-    _TASK_TIMEOUT = int(os.getenv("EVAL_TASK_TIMEOUT", "1800"))  # 默认30分钟
+    _TASK_TIMEOUT_DEFAULT = 1800  # 默认30分钟
 
     def _execute_task(self, task_id: str, resume: bool, retry_failed_only: bool):
         """评估任务执行主逻辑（在后台线程中运行，带整体超时保护）。"""
@@ -422,16 +450,21 @@ class PersistentEvalManager:
         from app.evaluation.eval_dataset import EVAL_DATASET
         from app.config import settings
 
+        # 通过settings获取超时配置，回退到默认值
+        task_timeout = getattr(settings, 'EVAL_TASK_TIMEOUT', None)
+        if task_timeout is None:
+            task_timeout = int(os.getenv("EVAL_TASK_TIMEOUT", str(self._TASK_TIMEOUT_DEFAULT)))
+
         def _timeout_watcher():
-            """超时监控：超过_TASK_TIMEOUT后强制标记任务失败。"""
-            time.sleep(self._TASK_TIMEOUT)
+            """超时监控：超过task_timeout后强制标记任务失败。"""
+            time.sleep(task_timeout)
             task = _load_task(task_id)
             if task and task["status"] in ("running", "scoring"):
-                task.update({"status": "failed", "error": f"任务超时({self._TASK_TIMEOUT}s)",
+                task.update({"status": "failed", "error": f"任务超时({task_timeout}s)",
                              "updated_at": datetime.now().isoformat()})
                 with file_lock:
-                    _save_task(task)
-                print(f"[PersistentEval] 任务 {task_id} 超时({self._TASK_TIMEOUT}s)，已标记失败")
+                    save_task(task)
+                print(f"[PersistentEval] 任务 {task_id} 超时({task_timeout}s)，已标记失败")
 
         watcher = threading.Thread(target=_timeout_watcher, daemon=True)
         watcher.start()
@@ -455,7 +488,7 @@ class PersistentEvalManager:
         task["status"] = "running"
         task["started_at"] = task.get("started_at") or now
         task["updated_at"] = now
-        _save_task(task)
+        save_task(task)
 
         # ── 确定需要评估的题目索引 ──
         if retry_failed_only:
@@ -525,7 +558,7 @@ class PersistentEvalManager:
             task = _load_task(task_id)
             task.update({"status": "failed", "error": str(e),
                          "updated_at": datetime.now().isoformat()})
-            _save_task(task)
+            save_task(task)
             print(f"[PersistentEval] 任务 {task_id} 整体失败: {e}")
             return
 
@@ -546,7 +579,7 @@ class PersistentEvalManager:
                 if task:
                     task["status"] = "scoring"
                     task["updated_at"] = datetime.now().isoformat()
-                    _save_task(task)
+                    save_task(task)
             print(f"[PersistentEval] 答案生成完成({len(success_results)}/{total}成功)，运行RAGAS批量评分...")
             try:
                 full_report = self._run_ragas_scoring(task_id, success_results, eval_runner)
@@ -589,7 +622,7 @@ class PersistentEvalManager:
 
         try:
             response = eval_runner.rag_engine.chat(
-                ChatRequest(question=item["question"])
+                ChatRequest(question=item["question"]), use_reranker=True
             )
             record["answer"] = response.answer
             record["contexts"] = [src.content for src in response.sources]
@@ -610,8 +643,8 @@ class PersistentEvalManager:
     ) -> Dict[str, Any]:
         """对已完成的全部题目运行RAGAS评分 + 检索指标 + 响应指标。"""
         from datasets import Dataset
-        from ragas import evaluate
-        from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
+        from ragas import evaluate as ragas_evaluate, RunConfig
+        from ragas.metrics import faithfulness, context_precision, context_recall
         from app.evaluation.retrieval_metrics import (
             compute_retrieval_metrics, compute_retrieval_metrics_by_type,
         )
@@ -644,13 +677,19 @@ class PersistentEvalManager:
         })
 
         scores, type_scores, faithfulness_per_query = {}, {}, []
-        metrics = [faithfulness, answer_relevancy, context_precision, context_recall]
+        metrics = [faithfulness, context_precision, context_recall]  # 不含answer_relevancy（部分API不支持n>1）
 
         for attempt in range(1, eval_runner.MAX_RETRIES + 1):
             try:
-                result = evaluate(ds, metrics=metrics,
+                run_config = RunConfig(
+                    timeout=180,
+                    max_retries=3,
+                    max_wait=300,
+                    max_workers=4,
+                )
+                result = ragas_evaluate(ds, metrics=metrics,
                                   llm=eval_runner.ragas_llm, embeddings=eval_runner.ragas_embeddings,
-                                  batch_size=3)
+                                  batch_size=3, run_config=run_config)
                 result_df = result.to_pandas()
                 scores = _mean_scores(result_df)
 
@@ -708,7 +747,7 @@ class PersistentEvalManager:
         triad = {
             "context_relevancy": scores.get("context_recall") or 0.0,
             "faithfulness": scores.get("faithfulness") or 0.0,
-            "answer_relevancy": scores.get("answer_relevancy") or 0.0,
+            # answer_relevancy已移除（部分API不支持n>1）
         }
         details = [
             {"question": r.get("question", ""), "question_type": r.get("question_type", "retrieve"),

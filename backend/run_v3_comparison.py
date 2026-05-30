@@ -58,7 +58,7 @@ EXPERIMENTS = {
 }
 
 
-def run_experiment(exp_key: str, exp_config: dict) -> dict:
+def run_experiment(exp_key: str, exp_config: dict, sample_count: int = None) -> dict:
     """运行单组实验。"""
     print(f"\n{'='*60}")
     print(f"  实验: {exp_config['label']}")
@@ -82,7 +82,7 @@ def run_experiment(exp_key: str, exp_config: dict) -> dict:
         # 运行评估
         runner = EvalRunner(engine)
         start_time = time.time()
-        result = runner.run()
+        result = runner.run(sample_count=sample_count)
         elapsed = time.time() - start_time
 
         # 保存结果（用 exp_key 作为标识）
@@ -191,7 +191,7 @@ def main():
     # 依次运行
     results = []
     for key in exp_keys:
-        result = run_experiment(key, EXPERIMENTS[key])
+        result = run_experiment(key, EXPERIMENTS[key], sample_count=args.sample)
         if result:
             results.append(result)
 

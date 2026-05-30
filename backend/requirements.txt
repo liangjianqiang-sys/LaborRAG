@@ -23,6 +23,7 @@ sentence-transformers>=3.0.0
 
 # Document loading
 pypdf>=5.0.0
+pymupdf4llm>=0.0.17
 docx2txt>=0.8
 unstructured>=0.16.0
 
@@ -36,6 +37,7 @@ datasets>=2.14.0
 
 # LangGraph (V3)
 langgraph>=0.2.0
+typing_extensions>=4.0.0
 
 # Numeric computation (V3)
 numpy>=1.24.0

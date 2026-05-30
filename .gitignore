@@ -33,8 +33,8 @@ frontend/.vite/
 *.onnx
 *.safetensors
 
-# 向量库数据
-D:/LaborRAG_data/
+# 运行时数据（跨平台，替代原来的 D:/LaborRAG_data/）
+runtime_data/
 
 # OS
 .DS_Store

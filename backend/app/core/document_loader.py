@@ -2,18 +2,18 @@ import os
 from typing import List
 from langchain_core.documents import Document
 from langchain_community.document_loaders import (
-    PyPDFLoader,
     Docx2txtLoader,
     TextLoader,
     UnstructuredMarkdownLoader,
 )
+import pymupdf4llm
 
 
 class DocumentLoader:
     """文档加载器，支持PDF/DOCX/TXT/MD格式。"""
 
     SUPPORTED_EXTENSIONS = {
-        ".pdf": PyPDFLoader,
+        ".pdf": "pymupdf4llm",
         ".docx": Docx2txtLoader,
         ".txt": TextLoader,
         ".md": UnstructuredMarkdownLoader,
@@ -56,15 +56,21 @@ class DocumentLoader:
         """内部加载方法。"""
         ext = os.path.splitext(filepath)[1].lower()
         loader_cls = self.SUPPORTED_EXTENSIONS[ext]
+        filename = os.path.basename(filepath)
 
-        if ext == ".txt":
+        if ext == ".pdf":
+            # PyMuPDF4LLM: PDF → Markdown，结构更完整
+            md_text = pymupdf4llm.to_markdown(filepath)
+            docs = [Document(page_content=md_text, metadata={"source": filename})]
+        elif ext == ".txt":
             loader = loader_cls(filepath, encoding="utf-8")
+            docs = loader.load()
+            for doc in docs:
+                doc.metadata["source"] = filename
         else:
             loader = loader_cls(filepath)
-
-        docs = loader.load()
-        filename = os.path.basename(filepath)
-        for doc in docs:
-            doc.metadata["source"] = filename
+            docs = loader.load()
+            for doc in docs:
+                doc.metadata["source"] = filename
 
         return docs

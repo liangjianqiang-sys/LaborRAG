@@ -51,10 +51,7 @@ async def lifespan(app: FastAPI):
     """应用生命周期：启动时初始化RAG引擎，关闭时清理资源。"""
     # 过滤高频轮询日志（reload子进程中也生效）
     import logging
-    class _PollingFilter(logging.Filter):
-        _HIDDEN = ("/evaluation/status", "/evaluation/persistent/progress")
-        def filter(self, record):
-            return not any(p in record.getMessage() for p in self._HIDDEN)
+    from run import _PollingFilter
     logging.getLogger("uvicorn.access").addFilter(_PollingFilter())
 
     print(f"🚀 {settings.PROJECT_NAME} v{settings.VERSION} starting...")
@@ -69,21 +66,20 @@ async def lifespan(app: FastAPI):
     print("✅ RAG引擎初始化完成")
 
     # 将上次未完成的评估任务标记为paused（不自动恢复，需手动续评）
-    from app.evaluation.eval_persistent import _load_all_tasks, _save_task, file_lock
+    from app.evaluation.eval_persistent import load_all_tasks, save_task, file_lock
     with file_lock:
-        for task in _load_all_tasks():
+        for task in load_all_tasks():
             if task.get("status") in ("running", "scoring"):
                 task["status"] = "paused"
                 task["error"] = "服务重启，任务已暂停"
                 task["updated_at"] = datetime.now().isoformat()
-                _save_task(task)
+                save_task(task)
                 print(f"  ⏸ 任务 {task['task_id']} 标记为paused（服务重启）")
 
-    # 预加载评估模型（后台不阻塞启动）
-    import threading
-    t = threading.Thread(target=_preload_eval_models, daemon=True)
-    t.start()
+    # 预加载评估模型（同步阻塞，启动后不等待）
+    _preload_eval_models()
 
+    print("✅ 所有模型预加载完成")
     yield
 
     print("👋 Shutting down...")

@@ -8,7 +8,7 @@ class BaseRetriever(ABC):
 
     @abstractmethod
     def retrieve(
-        self, query: str, k: int = 5, score_threshold: float = 0.3
+        self, query: str, k: int = 5, score_threshold: float = 0.2
     ) -> List[Tuple[Document, float]]:
         """检索与query相关的文档，返回(文档, 分数)列表。"""
         pass

@@ -107,7 +107,7 @@ class EvalReport:
             d["_score"] = (
                 resp.get("rouge_l", 0) * 0.3
                 + resp.get("completeness", 0) * 0.4
-                + (1 - resp.get("hallucination_rate", 1)) * 0.3
+                + (1 - (resp.get("hallucination_rate") or 1)) * 0.3
             ) if resp else 0.5
 
         bad_cases = sorted(details, key=lambda d: d.get("_score", 0))[:top_n]
@@ -124,8 +124,10 @@ class EvalReport:
         # 检索质量
         ret = latest.get("retrieval", {})
         retrieval_quality = {
-            "recall@5": ret.get("recall@5", 0),
+            "precision@1": ret.get("precision@1", 0),
             "precision@5": ret.get("precision@5", 0),
+            "recall@5": ret.get("recall@5", 0),
+            "mrr": ret.get("mrr", 0),
             "corpus_coverage": latest.get("scores", {}).get("context_recall", 0),
         }
 
