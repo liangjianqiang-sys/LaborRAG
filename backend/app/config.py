@@ -72,7 +72,7 @@ class Settings:
 
     # 重排序配置 (V2)
     RERANKER_MODEL_NAME: str = os.getenv("RERANKER_MODEL_NAME", "BAAI/bge-reranker-v2-m3")
-    RERANK_TOP_K: int = int(os.getenv("RERANK_TOP_K", "8"))          # 重排序后返回数量
+    RERANK_TOP_K: int = int(os.getenv("RERANK_TOP_K", "12"))          # 重排序后返回数量
     RERANK_SCORE_THRESHOLD: float = float(os.getenv("RERANK_SCORE_THRESHOLD", "0.0"))  # CrossEncoder原始分数阈值(>0相关,<0不相关)
 
     # 上下文压缩配置 (V3)

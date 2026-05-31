@@ -27,7 +27,7 @@ from langgraph.graph import StateGraph, END
 
 from app.config import settings
 from app.core.retriever.compressor import EmbeddingsCompressor
-from app.core.generator.prompts import ANSWER_STYLE_RULES, RETRIEVAL_EVALUATION_PROMPT
+from app.core.generator.prompts import ANSWER_STYLE_RULES, RETRIEVAL_EVALUATION_PROMPT, MULTI_QUERY_EXPANSION_PROMPT
 from app.core.generator.guardrails import AnswerGuardrails
 
 
@@ -599,39 +599,71 @@ class AgenticRAGGraph:
         return {"intent": intent, "steps": steps}
 
     def _retrieve_docs(self, state: AgentState) -> dict:
-        """Retriever Agent：检索法条文档（三种路径共用）。"""
+        """Retriever Agent：检索法条文档（三种路径共用）。
+
+        复杂题自动多查询扩展：拆分为2-3个子查询分别检索，合并去重。
+        """
         print(f"[Agent] 🔍 检索法条...")
         question = state.get("rewritten_question") or state["question"]
+        complexity = state.get("complexity", "medium")
 
-        # 自适应rerank_top_k：简单3条，复杂5条
-        rerank_top_k = 3 if state.get("complexity") == "simple" else 5
+        # 自适应rerank_top_k：简单3条，中等5条，复杂8条
+        rerank_top_k = 3 if complexity == "simple" else (5 if complexity == "medium" else 8)
+
+        # ── 多查询扩展：复杂题拆分子查询分别检索 ──
+        sub_queries = [question]
+        if complexity == "complex":
+            sub_queries = self._expand_queries(question)
+
         from app.core.retriever.reranked import RerankedRetriever
-        if isinstance(self.retriever, RerankedRetriever):
-            docs = self.retriever.retrieve(
-                query=question,
-                k=settings.TOP_K,
-                score_threshold=settings.SCORE_THRESHOLD,
-                rerank_top_k=rerank_top_k,
-            )
-        else:
-            docs = self.retriever.retrieve(
-                query=question,
-                k=settings.TOP_K,
-                score_threshold=settings.SCORE_THRESHOLD,
-            )
+        all_docs = []
+        seen_doc_ids = set()
 
-        # 上下文压缩
-        if docs:
-            docs = self.compressor.compress(question, docs)
-            if not docs:
+        for q in sub_queries:
+            if isinstance(self.retriever, RerankedRetriever):
                 docs = self.retriever.retrieve(
-                    query=question, k=settings.TOP_K,
+                    query=q,
+                    k=settings.TOP_K,
+                    score_threshold=settings.SCORE_THRESHOLD,
+                    rerank_top_k=rerank_top_k,
+                )
+            else:
+                docs = self.retriever.retrieve(
+                    query=q,
+                    k=settings.TOP_K,
                     score_threshold=settings.SCORE_THRESHOLD,
                 )
+            # 去重合并
+            for doc, score in docs:
+                doc_id = doc.metadata.get("doc_id", doc.page_content[:80])
+                if doc_id not in seen_doc_ids:
+                    seen_doc_ids.add(doc_id)
+                    all_docs.append((doc, score))
+
+        # 按分数降序排列
+        all_docs.sort(key=lambda x: x[1], reverse=True)
+
+        # 上下文压缩
+        if all_docs:
+            all_docs = self.compressor.compress(question, all_docs)
+            if not all_docs:
+                # 压缩失败，回退到原始检索
+                if isinstance(self.retriever, RerankedRetriever):
+                    all_docs = self.retriever.retrieve(
+                        query=question, k=settings.TOP_K,
+                        score_threshold=settings.SCORE_THRESHOLD,
+                        rerank_top_k=rerank_top_k,
+                    )
+                else:
+                    all_docs = self.retriever.retrieve(
+                        query=question, k=settings.TOP_K,
+                        score_threshold=settings.SCORE_THRESHOLD,
+                    )
 
         steps = state.get("steps", [])
-        steps.append(f"检索: 获取{len(docs)}个文档")
-        return {"context_docs": docs, "steps": steps}
+        expand_info = f" (多查询扩展: {len(sub_queries)}个子查询)" if len(sub_queries) > 1 else ""
+        steps.append(f"检索: 获取{len(all_docs)}个文档{expand_info}")
+        return {"context_docs": all_docs, "steps": steps}
 
     def _retrieve_for_compare(self, state: AgentState) -> dict:
         """Comparator检索：分别检索两组法条。
@@ -796,12 +828,58 @@ class AgenticRAGGraph:
         else:
             reason = verdict.replace("fail:", "").strip()
             steps.append(f"验证: 未通过 - {reason}")
-            # 验证未通过时不追加警告文本到answer中，
-            # 否则RAGAS faithfulness会将追加内容判定为"幻觉"（contexts中无依据）
 
         return {"validation_passed": passed, "answer": answer, "steps": steps}
 
+    def _self_correct(self, state: AgentState) -> dict:
+        """自修正：验证未通过时，用更强约束的prompt重新生成。"""
+        print(f"[Agent] 🔧 自修正重新生成...")
+        question = state.get("rewritten_question") or state["question"]
+        docs = state.get("context_docs", [])
+        original_answer = state.get("answer", "")
+
+        context = self._format_docs(docs, fallback="未找到相关参考资料。")
+
+        correction_prompt = ChatPromptTemplate.from_template(
+            "{style_rules}\n\n"
+            "【重要】上一次生成的回答经验证存在不准确之处，请严格基于以下参考资料重新回答。\n"
+            "规则：\n"
+            "- 只使用参考资料中明确出现的法条和表述，禁止使用任何参考资料以外的知识\n"
+            "- 每个论断必须标注来源法条，无来源的结论不得输出\n"
+            "- 如果参考资料不足以回答，直接说明不足之处，不要编造\n\n"
+            "参考资料：\n{context}\n\n"
+            "问题：{question}\n\n回答："
+        )
+        chain = correction_prompt | self.gen_llm
+        result = chain.invoke({
+            "style_rules": ANSWER_STYLE_RULES,
+            "context": context,
+            "question": question,
+        })
+
+        steps = state.get("steps", [])
+        steps.append("自修正: 基于更强约束重新生成")
+        return {"answer": result.content, "validation_passed": True, "steps": steps}
+
     # ─── 辅助方法 ──────────────────────────────────────────
+
+    def _expand_queries(self, question: str) -> List[str]:
+        """多查询扩展：将复杂问题拆分为多个子查询。
+
+        使用轻量LLM拆分，返回子查询列表（含原始问题）。
+        """
+        try:
+            prompt = ChatPromptTemplate.from_template(MULTI_QUERY_EXPANSION_PROMPT)
+            chain = prompt | self.grader_llm
+            result = chain.invoke({"question": question})
+            sub_queries = [line.strip() for line in result.content.strip().split("\n") if line.strip()]
+            if not sub_queries:
+                return [question]
+            print(f"[Agent] 🔍 多查询扩展: '{question[:30]}...' → {sub_queries}")
+            return sub_queries
+        except Exception as e:
+            print(f"[Agent] 🔍 多查询扩展失败: {e}，使用原始查询")
+            return [question]
 
     def _check_retrieval_sufficiency(self, question: str, context: str) -> bool:
         """用轻量LLM判断检索结果是否足以回答问题。"""
@@ -860,6 +938,7 @@ class AgenticRAGGraph:
 
         # Validator
         graph.add_node("validate", self._validate)
+        graph.add_node("self_correct", self._self_correct)
 
         # ── 复杂度分类（新增） ──
         graph.add_node("classify_complexity", self._classify_complexity)
@@ -904,8 +983,16 @@ class AgenticRAGGraph:
         graph.add_edge("retrieve_for_compare", "compare")
         graph.add_edge("compare", "validate")
 
-        # ── Validator → END ──
-        graph.add_edge("validate", END)
+        # ── Validator → 通过则END，未通过则自修正 ──
+        graph.add_conditional_edges(
+            "validate",
+            lambda state: "output" if state.get("validation_passed", True) else "self_correct",
+            {
+                "output": END,
+                "self_correct": "self_correct",
+            },
+        )
+        graph.add_edge("self_correct", END)
 
         return graph.compile()
 

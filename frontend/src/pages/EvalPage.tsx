@@ -38,7 +38,7 @@ export default function EvalPage() {
   const [comparison, setComparison] = useState<EvalComparison | null>(null)
   const [observability, setObservability] = useState<Observability | null>(null)
   const [badCases, setBadCases] = useState<BadCase[]>([])
-  const [sampleCount, setSampleCount] = useState(36)
+  const [sampleCount, setSampleCount] = useState(6)
   const [ragMode, setRagMode] = useState<string>('')
   const [questionType, setQuestionType] = useState<string>('')
   const [expandedBadCase, setExpandedBadCase] = useState<number | null>(null)
@@ -171,9 +171,9 @@ export default function EvalPage() {
             onChange={(e) => setSampleCount(Number(e.target.value))}
             className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-400/30 focus:border-brand-400"
           >
-            <option value={5}>5题</option>
-            <option value={10}>10题</option>
-            <option value={20}>20题</option>
+            <option value={6}>6题(快速验证)</option>
+            <option value={12}>12题(高风险)</option>
+            <option value={18}>18题(快速+高风险)</option>
             <option value={36}>全部(36)</option>
           </select>
           <select
@@ -190,7 +190,8 @@ export default function EvalPage() {
             onClick={async () => {
               try {
                 setPRunning(true)
-                const { task_id } = await createPersistentTask(ragMode || undefined, sampleCount, questionType || undefined)
+                const offset = sampleCount === 12 ? 6 : undefined
+                const { task_id } = await createPersistentTask(ragMode || undefined, sampleCount, questionType || undefined, offset)
                 await startPersistentTask(task_id)
                 startPPolling(task_id)
                 listPersistentTasks().then(r => setPTasks(r.tasks)).catch(() => {})
@@ -533,7 +534,7 @@ export default function EvalPage() {
                 <div className="space-y-2.5">
                   {[
                     { key: 'faithfulness', label: '忠实度' },
-                    { key: 'hallucination_rate', label: '幻觉率', invert: true },
+                    { key: 'hallucination_rate', label: '幻觉率', invert: false },
                     { key: 'completeness', label: '完整性' },
                   ].map(({ key, label, invert }) => {
                     const val = (observability.generation_quality as Record<string, number>)[key] ?? 0

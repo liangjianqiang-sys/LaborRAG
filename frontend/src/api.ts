@@ -278,11 +278,13 @@ export async function createPersistentTask(
   ragMode?: string,
   sampleCount?: number,
   questionType?: string,
+  sampleOffset?: number,
 ): Promise<{ task_id: string; message: string }> {
   const params = new URLSearchParams()
   if (ragMode) params.set('rag_mode', ragMode)
   if (sampleCount) params.set('sample_count', String(sampleCount))
   if (questionType) params.set('question_type', questionType)
+  if (sampleOffset) params.set('sample_offset', String(sampleOffset))
   const qs = params.toString() ? `?${params.toString()}` : ''
   const res = await fetch(`${API_BASE}/evaluation/persistent/create${qs}`, {
     method: 'POST',

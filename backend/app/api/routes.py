@@ -273,11 +273,13 @@ async def create_persistent_task(
     rag_mode: str = None,
     sample_count: int = None,
     question_type: str = None,
+    sample_offset: int = None,
 ):
     """创建断点续评任务（不立即执行）。"""
     _require_engine()
     task_id = _get_persistent_manager().create_task(
         rag_mode=rag_mode, sample_count=sample_count, question_type=question_type,
+        sample_offset=sample_offset,
     )
     return {"task_id": task_id, "message": "任务已创建"}
 

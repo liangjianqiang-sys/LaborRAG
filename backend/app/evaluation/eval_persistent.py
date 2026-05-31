@@ -190,6 +190,7 @@ class PersistentEvalManager:
         rag_mode: str = None,
         sample_count: int = None,
         question_type: str = None,
+        sample_offset: int = None,
     ) -> str:
         """创建新的评估任务，返回task_id。
 
@@ -202,6 +203,7 @@ class PersistentEvalManager:
             "rag_mode": rag_mode,
             "sample_count": sample_count,
             "question_type": question_type,
+            "sample_offset": sample_offset,
             "total_questions": 0,
             "completed_indices": [],       # 已完成的题目索引列表
             "failed_indices": [],          # 失败的题目索引列表
@@ -479,6 +481,9 @@ class PersistentEvalManager:
         if question_type:
             dataset = [d for d in dataset if d.get("question_type") == question_type]
         sample_count = task.get("sample_count")
+        sample_offset = task.get("sample_offset") or 0
+        if sample_offset:
+            dataset = dataset[sample_offset:]
         if sample_count:
             dataset = dataset[:sample_count]
 
@@ -622,10 +627,11 @@ class PersistentEvalManager:
 
         try:
             response = eval_runner.rag_engine.chat(
-                ChatRequest(question=item["question"]), use_reranker=True
+                ChatRequest(question=item["question"], skip_guardrails=True), use_reranker=True
             )
             record["answer"] = response.answer
-            record["contexts"] = [src.content for src in response.sources]
+            # 优先使用完整contexts（不截断），避免RAGAS误判幻觉
+            record["contexts"] = response.full_contexts if response.full_contexts else [src.content for src in response.sources]
             record["sources"] = [{"source": s.source, "content": s.content} for s in response.sources]
             record["rag_mode"] = response.rag_mode
         except Exception as e:
