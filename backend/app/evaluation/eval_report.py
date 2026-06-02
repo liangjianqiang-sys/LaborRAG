@@ -121,14 +121,11 @@ class EvalReport:
         if not latest:
             return {"message": "暂无评估结果"}
 
-        # 检索质量
+        # 检索质量（只保留核心指标）
         ret = latest.get("retrieval", {})
         retrieval_quality = {
             "precision@1": ret.get("precision@1", 0),
-            "precision@5": ret.get("precision@5", 0),
             "recall@5": ret.get("recall@5", 0),
-            "mrr": ret.get("mrr", 0),
-            "corpus_coverage": latest.get("scores", {}).get("context_recall", 0),
         }
 
         # 生成质量

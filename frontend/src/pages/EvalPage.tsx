@@ -1,21 +1,21 @@
 import { useState, useEffect, useRef } from 'react'
-import { BarChart3, Play, FileBarChart, Info, ChevronDown, ChevronUp, Search, Calculator, GitCompare, Eye, AlertTriangle, Shield, Activity, RotateCcw, FastForward, RefreshCw, ListChecks, Square, Trash2, Gauge, Layers, ArrowLeftRight, Sparkles, TrendingUp } from 'lucide-react'
+import { BarChart3, Play, FileBarChart, Info, ChevronDown, ChevronUp, Search, Calculator, GitCompare, Eye, AlertTriangle, Activity, RotateCcw, FastForward, RefreshCw, ListChecks, Square, Trash2, Gauge, Layers, ArrowLeftRight, Sparkles, TrendingUp } from 'lucide-react'
 import { getEvaluationReport, getObservability, getBadCases, createPersistentTask, startPersistentTask, resumePersistentTask, restartPersistentTask, retryFailedPersistentTask, forceStopPersistentTask, deletePersistentTask, listPersistentTasks, getPersistentProgress, getPersistentReport, type EvalComparison, type Observability, type BadCase, type PersistentTask, type PersistentProgress, type PersistentReport } from '../api'
 
 const STRATEGY_LABELS: Record<string, string> = {
-  vector: 'V1 纯向量',
-  hybrid: 'V2 混合检索',
-  reranked: 'V2 重排序',
-  crag: 'V3 CRAG纠错',
-  simple: 'V1/V2 简单链路',
-  agent: 'V4 Agentic RAG',
+  vector: '纯向量检索',
+  hybrid: '混合检索',
+  reranked: '重排序检索',
+  crag: 'CRAG纠错(已移除)',
+  simple: '简单链路',
+  agent: 'Agentic RAG',
 }
 
 const STRATEGY_COLORS: Record<string, string> = {
   vector: 'text-brand-600 bg-brand-50 border-brand-200',
   hybrid: 'text-accent-600 bg-accent-50 border-accent-200',
   reranked: 'text-cyan-600 bg-cyan-50 border-cyan-100',
-  crag: 'text-amber-600 bg-amber-50 border-amber-200',
+  crag: 'text-amber-600 bg-amber-50 border-amber-200 opacity-50',
   simple: 'text-slate-600 bg-slate-50 border-slate-200',
   agent: 'text-emerald-600 bg-emerald-50 border-emerald-100',
 }
@@ -38,9 +38,10 @@ export default function EvalPage() {
   const [comparison, setComparison] = useState<EvalComparison | null>(null)
   const [observability, setObservability] = useState<Observability | null>(null)
   const [badCases, setBadCases] = useState<BadCase[]>([])
-  const [sampleCount, setSampleCount] = useState(6)
+  const [evalSubset, setEvalSubset] = useState<string>('smoke')
   const [ragMode, setRagMode] = useState<string>('')
   const [questionType, setQuestionType] = useState<string>('')
+  const [difficulty, setDifficulty] = useState<string>('')
   const [expandedBadCase, setExpandedBadCase] = useState<number | null>(null)
 
   const [pTasks, setPTasks] = useState<PersistentTask[]>([])
@@ -93,29 +94,21 @@ export default function EvalPage() {
   const metricLabel = (key: string) => {
     const labels: Record<string, string> = {
       faithfulness: '忠实度',
-      answer_relevancy: '答案相关性',
-      context_precision: '上下文精确度',
-      context_recall: '上下文召回率',
     }
     return labels[key] || key
   }
 
-  // 从 pReport 和 observability 中提取核心指标（去重：只在这里展示一次）
+  // 核心指标：统一从 observability 提取（包含检索+生成全部5个指标）
   const coreMetrics = (() => {
     const m: { label: string; value: number; color: string }[] = []
-    // RAGAS 核心指标（来自 pReport）
-    if (pReport?.ragas_full?.triad) {
-      const triad = pReport.ragas_full.triad
-      if (triad.faithfulness != null) m.push({ label: '忠实度', value: triad.faithfulness, color: 'text-emerald-600' })
-      if (triad.context_precision != null) m.push({ label: '上下文精确度', value: triad.context_precision, color: 'text-brand-600' })
-      if (triad.context_recall != null) m.push({ label: '上下文召回率', value: triad.context_recall, color: 'text-accent-600' })
-    }
-    // 检索核心指标（来自 observability，不重复 faithfulness）
     if (observability && !observability.message) {
       const rq = observability.retrieval_quality as Record<string, number>
+      const gq = observability.generation_quality as Record<string, number>
       if (rq['precision@1'] != null) m.push({ label: '精确率 P@1', value: rq['precision@1'], color: 'text-cyan-600' })
-      if (rq['mrr'] != null) m.push({ label: 'MRR', value: rq['mrr'], color: 'text-violet-600' })
       if (rq['recall@5'] != null) m.push({ label: '召回率 R@5', value: rq['recall@5'], color: 'text-amber-600' })
+      if (gq['faithfulness'] != null) m.push({ label: '忠实度', value: gq['faithfulness'], color: 'text-emerald-600' })
+      if (gq['hallucination_rate'] != null) m.push({ label: '幻觉率', value: gq['hallucination_rate'], color: 'text-red-500' })
+      if (gq['completeness'] != null) m.push({ label: '完整性', value: gq['completeness'], color: 'text-violet-600' })
     }
     return m
   })()
@@ -162,19 +155,17 @@ export default function EvalPage() {
             className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-400/30 focus:border-brand-400"
           >
             <option value="">当前配置</option>
-            <option value="simple">V1/V2 简单链路</option>
-            <option value="crag">V3 CRAG纠错</option>
-            <option value="agent">V4 Agentic RAG</option>
+            <option value="simple">简单链路</option>
+            <option value="crag" disabled>CRAG纠错(已移除)</option>
+            <option value="agent">Agentic RAG</option>
           </select>
           <select
-            value={sampleCount}
-            onChange={(e) => setSampleCount(Number(e.target.value))}
+            value={evalSubset}
+            onChange={(e) => setEvalSubset(e.target.value)}
             className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-400/30 focus:border-brand-400"
           >
-            <option value={6}>6题(快速验证)</option>
-            <option value={12}>12题(高风险)</option>
-            <option value={18}>18题(快速+高风险)</option>
-            <option value={36}>全部(36)</option>
+            <option value="smoke">Smoke(5题/1.5min)</option>
+            <option value="full">Full(20题/5-8min)</option>
           </select>
           <select
             value={questionType}
@@ -186,12 +177,24 @@ export default function EvalPage() {
             <option value="calculate">计算类</option>
             <option value="compare">对比类</option>
           </select>
+          <select
+            value={difficulty}
+            onChange={(e) => setDifficulty(e.target.value)}
+            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-400/30 focus:border-brand-400"
+          >
+            <option value="">全部难度</option>
+            <option value="easy">Easy</option>
+            <option value="medium">Medium</option>
+            <option value="hard">Hard</option>
+          </select>
           <button
             onClick={async () => {
               try {
                 setPRunning(true)
-                const offset = sampleCount === 12 ? 6 : undefined
-                const { task_id } = await createPersistentTask(ragMode || undefined, sampleCount, questionType || undefined, offset)
+                const { task_id } = await createPersistentTask(
+                  ragMode || undefined, undefined, questionType || undefined, undefined,
+                  evalSubset || undefined, difficulty || undefined,
+                )
                 await startPersistentTask(task_id)
                 startPPolling(task_id)
                 listPersistentTasks().then(r => setPTasks(r.tasks)).catch(() => {})
@@ -408,13 +411,24 @@ export default function EvalPage() {
       </div>
 
       {/* ══════════════════════════════════════════════════════
-          第二层：核心评估指标卡片（去重，只展示一次）
+          第二层：核心评估指标卡片（5个核心指标 + 概要统计）
       ══════════════════════════════════════════════════════ */}
       {(coreMetrics.length > 0 || (pReport && pReport.summary)) && (
         <div className="bg-white rounded-xl border border-slate-200/80 shadow-card overflow-hidden">
-          <div className="px-5 py-4 border-b border-emerald-100/50 flex items-center gap-2 bg-emerald-50/30">
-            <TrendingUp size={16} className="text-emerald-500" />
-            <h3 className="font-semibold text-slate-700 text-sm">核心评估指标</h3>
+          <div className="px-5 py-4 border-b border-emerald-100/50 flex items-center justify-between bg-emerald-50/30">
+            <div className="flex items-center gap-2">
+              <TrendingUp size={16} className="text-emerald-500" />
+              <h3 className="font-semibold text-slate-700 text-sm">核心评估指标</h3>
+            </div>
+            {coreMetrics.length === 0 && (
+              <button
+                onClick={() => getObservability().then(setObservability).catch(() => {})}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 transition-all duration-200"
+              >
+                <Eye size={13} />
+                加载指标
+              </button>
+            )}
           </div>
 
           <div className="px-5 py-5">
@@ -479,93 +493,39 @@ export default function EvalPage() {
       )}
 
       {/* ══════════════════════════════════════════════════════
-          第三层：深度分析（可观测性 + 策略对比 + Bad Case）
+          第三层：深度分析（业务指标 + 策略对比 + Bad Case）
       ══════════════════════════════════════════════════════ */}
 
-      {/* ── 可观测性面板（细分数据，不重复核心指标） ── */}
+      {/* ── 业务指标面板 ── */}
       <div className="bg-white rounded-xl border border-slate-200/80 shadow-card overflow-hidden">
-        <div className="px-5 py-4 border-b border-accent-100/50 flex items-center justify-between bg-accent-50/30">
+        <div className="px-5 py-4 border-b border-cyan-100/50 flex items-center justify-between bg-cyan-50/30">
           <h3 className="font-semibold text-slate-700 flex items-center gap-2 text-sm">
-            <Eye size={16} className="text-accent-500" />
-            可观测性面板
+            <Activity size={16} className="text-cyan-500" />
+            业务指标
           </h3>
           <button
             onClick={() => getObservability().then(setObservability).catch(() => {})}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-accent-500 px-3.5 py-2 text-xs font-medium text-white hover:bg-accent-600 transition-all duration-200 shadow-sm"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-cyan-500 px-3.5 py-2 text-xs font-medium text-white hover:bg-cyan-600 transition-all duration-200 shadow-sm"
           >
-            <Eye size={14} />
-            查看概览
+            <Activity size={14} />
+            加载数据
           </button>
         </div>
 
         <div className="px-5 pb-5 pt-4">
           {observability && !observability.message ? (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {/* 检索质量（细分：P@5/R@5已在核心卡片，这里展示完整细分） */}
-              <div className="rounded-xl border border-brand-100/80 bg-gradient-to-b from-brand-50/60 to-white p-4">
-                <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brand-100/50">
-                  <div className="w-7 h-7 rounded-lg bg-brand-100 flex items-center justify-center">
-                    <Search size={14} className="text-brand-600" />
-                  </div>
-                  <p className="text-sm font-semibold text-brand-800">检索质量</p>
-                </div>
-                <div className="space-y-2.5">
-                  {[
-                    { key: 'precision@1', label: '精确率 P@1' },
-                    { key: 'precision@5', label: '精确率 P@5' },
-                    { key: 'recall@5', label: '召回率 R@5' },
-                    { key: 'mrr', label: 'MRR' },
-                    { key: 'corpus_coverage', label: '语料覆盖率' },
-                  ].map(({ key, label }) => {
-                    const val = (observability.retrieval_quality as Record<string, number>)[key] ?? 0
-                    return <MetricRow key={key} label={label} value={val} />
-                  })}
-                </div>
-              </div>
-
-              {/* 生成质量（细分：faithfulness已在核心卡片，这里展示幻觉率/完整性等细分） */}
-              <div className="rounded-xl border border-emerald-100/80 bg-gradient-to-b from-emerald-50/60 to-white p-4">
-                <div className="flex items-center gap-2 mb-3 pb-2 border-b border-emerald-100/50">
-                  <div className="w-7 h-7 rounded-lg bg-emerald-100 flex items-center justify-center">
-                    <Shield size={14} className="text-emerald-600" />
-                  </div>
-                  <p className="text-sm font-semibold text-emerald-800">生成质量</p>
-                </div>
-                <div className="space-y-2.5">
-                  {[
-                    { key: 'faithfulness', label: '忠实度' },
-                    { key: 'hallucination_rate', label: '幻觉率', invert: false },
-                    { key: 'completeness', label: '完整性' },
-                  ].map(({ key, label, invert }) => {
-                    const val = (observability.generation_quality as Record<string, number>)[key] ?? 0
-                    return <MetricRow key={key} label={label} value={invert ? 1 - val : val} />
-                  })}
-                </div>
-              </div>
-
-              {/* 业务指标 */}
+            <div className="grid grid-cols-2 gap-4">
               <div className="rounded-xl border border-cyan-100/80 bg-gradient-to-b from-cyan-50/60 to-white p-4">
-                <div className="flex items-center gap-2 mb-3 pb-2 border-b border-cyan-100/50">
-                  <div className="w-7 h-7 rounded-lg bg-cyan-100 flex items-center justify-center">
-                    <Activity size={14} className="text-cyan-600" />
-                  </div>
-                  <p className="text-sm font-semibold text-cyan-800">业务指标</p>
-                </div>
-                <div className="space-y-2.5">
-                  {[
-                    { key: 'resolution_rate', label: '问题解决率' },
-                    { key: 'first_answer_usability', label: '首次回答可用率' },
-                  ].map(({ key, label }) => {
-                    const val = (observability.business as Record<string, number>)[key] ?? 0
-                    return <MetricRow key={key} label={label} value={val} />
-                  })}
-                </div>
+                <MetricRow label="问题解决率" value={observability.business.resolution_rate ?? 0} />
+              </div>
+              <div className="rounded-xl border border-cyan-100/80 bg-gradient-to-b from-cyan-50/60 to-white p-4">
+                <MetricRow label="首次回答可用率" value={observability.business.first_answer_usability ?? 0} />
               </div>
             </div>
           ) : !observability ? (
             <div className="flex flex-col items-center justify-center py-8 text-slate-400">
-              <Eye size={28} className="text-brand-200 mb-2" />
-              <p className="text-sm">点击「查看概览」获取三维度状态</p>
+              <Activity size={28} className="text-cyan-200 mb-2" />
+              <p className="text-sm">点击「加载数据」获取业务指标</p>
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center py-8 text-slate-400">
@@ -595,9 +555,10 @@ export default function EvalPage() {
           <div className="flex items-start gap-2.5 rounded-xl bg-brand-50/80 border border-brand-200/60 p-3.5 mb-4">
             <Info size={15} className="text-brand-500 flex-shrink-0 mt-0.5" />
             <div className="text-xs text-brand-700 leading-relaxed">
-              <p className="font-semibold mb-0.5">对比实验方法</p>
-              <p>在后端运行 <code className="bg-brand-100/80 px-1.5 py-0.5 rounded text-[10px] font-mono">python run_v3_comparison.py</code> 可自动执行 V1/V2/V3/V4 四组对比实验。</p>
-              <p className="mt-0.5">也可指定 <code className="bg-brand-100/80 px-1.5 py-0.5 rounded text-[10px] font-mono">--only agent</code> 只运行 V4，<code className="bg-brand-100/80 px-1.5 py-0.5 rounded text-[10px] font-mono">--sample 5</code> 限制样本数。</p>
+              <p className="font-semibold mb-0.5">Golden Set 双轨评估</p>
+              <p><b>Smoke</b>(5题/1.5min)：快速验证核心检索链路与安全护栏，适合日常迭代。</p>
+              <p><b>Full</b>(20题/5-8min)：完整评估，含计算推理/冷门法规/超纲拒答等长尾场景，适合系统验收。</p>
+              <p className="mt-0.5">也可在后端运行 <code className="bg-brand-100/80 px-1.5 py-0.5 rounded text-[10px] font-mono">python run_eval.py --subset smoke</code> 或 <code className="bg-brand-100/80 px-1.5 py-0.5 rounded text-[10px] font-mono">python run_eval.py --subset full</code>。</p>
             </div>
           </div>
         </div>

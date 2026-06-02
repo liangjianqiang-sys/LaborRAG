@@ -4,9 +4,9 @@ description: 开发进度追踪 - 记录当前完成状态，对话丢失后快�
 
 # LaborRAG 开发进度
 
-## 当前版本: V4 Agentic RAG多Agent版
-## 当前阶段: V4 核心代码完成 + 评估系统完善，待端到端测试
-## 最后更新: 2026-05-23
+## 当前版本: Agentic RAG
+## 当前阶段: 混合检索优化完成，待评估验证
+## 最后更新: 2026-06-02
 
 ---
 
@@ -29,7 +29,7 @@ description: 开发进度追踪 - 记录当前完成状态，对话丢失后快�
 | 阶段2: Reranker重排序 | ✅ 已完成 | reranked.py + BGE-Reranker-v2-m3 |
 | 阶段3: 法条结构化切分 | ✅ 已完成 | text_splitter.py + LawArticleSplitter |
 | 阶段4: RAGAS评估体系 | ✅ 已完成 | eval_dataset(24题+question_type) + eval_runner(支持rag_mode/分类型统计) + eval_report + API |
-| 阶段5: 对比实验 | ⬜ 待测试 | 需运行四组对比(vector/reranked/crag/agent) |
+| 阶段5: 对比实验 | ✅ 已完成 | 已替换为 run_eval.py 单策略评估+策略对比报告 |
 | 阶段6: 前端更新 | ✅ 已完成 | EvalPanel + 评估API |
 | 阶段7: 前端重构 | ✅ 已完成 | 多页面布局(问答/知识库/评估/设置) + React Router |
 | 阶段8: Prompt强化 | ✅ 已完成 | 三个生成器(simple/crag/agent)统一4条严格规则，Validator增加"法条是否在资料中"检查 |
@@ -47,10 +47,7 @@ description: 开发进度追踪 - 记录当前完成状态，对话丢失后快�
 | 阶段4: 回答质量评估 | ✅ 已完成 | _grade_answer节点 + 忠实度判断 |
 | 阶段5: 多轮对话 | ✅ 已完成 | conversation.py + conversation_id + 上下文注入CRAG |
 | 阶段6: CRAG流程可视化 | ✅ 已完成 | ChatResponse.crag_steps + 前端CragStepsPanel |
-| 阶段7: 对比实验代码 | ✅ 已完成 | run_v3_comparison.py + 前端评估页更新 |
 | 端到端测试 | ✅ 已完成 | CRAG工作流实际测试通过 |
-| 对比实验代码 | ✅ 已完成 | run_v3_comparison.py支持V1-V4四组实验 |
-| 对比实验运行 | ⏸ 延后 | 需统一运行四版对比 |
 
 ## V3 升级优化进度
 
@@ -81,7 +78,7 @@ description: 开发进度追踪 - 记录当前完成状态，对话丢失后快�
 | Prompt统一强化 | ✅ 已完成 | simple/crag/agent三路生成prompt统一4条规则, Validator增加资料内法条检查 |
 | auto_calculate改进 | ✅ 已完成 | 缺参时返回公式框架+缺失参数提示，不再直接放弃 |
 | 评估异步化 | ✅ 已完成 | 后台线程执行+GET /evaluation/status轮询+前端轮询模式+页面恢复状态 |
-| 对比实验运行 | ⏸ 延后 | 需V1-V4四版统一对比 |
+| 评估验证 | ⬜ 待运行 | 需重启后端后运行 run_eval.py |
 
 ## 技术决策记录
 - 2026-04-23: 确定使用LangChain 1.0 + LCEL + LangGraph路线

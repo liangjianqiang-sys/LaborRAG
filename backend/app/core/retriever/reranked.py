@@ -58,11 +58,11 @@ class RerankedRetriever(BaseRetriever):
         # 0. 查询增强：口语化关键词→法言法语+法条编号
         enhanced_query = enhance_query(query)
 
-        # 1. 先用Hybrid检索获取候选集（扩大到Top20）
+        # 1. 先用Hybrid检索获取候选集（扩大到Top50）
         #    注意：HybridRetriever内部已做子块→父块提升，
         #    但重排序需要在子块级别执行以获得更精准的排序，
         #    所以这里绕过Hybrid的提升，直接获取原始子块结果
-        candidate_k = min(k * 4, 20)
+        candidate_k = min(k * 5, 50)
 
         # 元数据过滤：用增强查询提取法条编号和法律名（query_enhance注入的法条编号也会被捕获）
         filter_dict = extract_article_ref(enhanced_query)

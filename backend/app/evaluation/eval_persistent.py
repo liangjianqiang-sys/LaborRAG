@@ -191,6 +191,8 @@ class PersistentEvalManager:
         sample_count: int = None,
         question_type: str = None,
         sample_offset: int = None,
+        eval_subset: str = None,
+        difficulty: str = None,
     ) -> str:
         """创建新的评估任务，返回task_id。
 
@@ -204,6 +206,8 @@ class PersistentEvalManager:
             "sample_count": sample_count,
             "question_type": question_type,
             "sample_offset": sample_offset,
+            "eval_subset": eval_subset,
+            "difficulty": difficulty,
             "total_questions": 0,
             "completed_indices": [],       # 已完成的题目索引列表
             "failed_indices": [],          # 失败的题目索引列表
@@ -480,6 +484,12 @@ class PersistentEvalManager:
         question_type = task.get("question_type")
         if question_type:
             dataset = [d for d in dataset if d.get("question_type") == question_type]
+        eval_subset = task.get("eval_subset")
+        if eval_subset:
+            dataset = [d for d in dataset if eval_subset in d.get("eval_subset", ["full"])]
+        difficulty = task.get("difficulty")
+        if difficulty:
+            dataset = [d for d in dataset if d.get("difficulty") == difficulty]
         sample_count = task.get("sample_count")
         sample_offset = task.get("sample_offset") or 0
         if sample_offset:
@@ -528,15 +538,7 @@ class PersistentEvalManager:
             return
 
         # ── 初始化RAG引擎 ──
-        original_mode = settings.RAG_MODE
-        rag_mode = task.get("rag_mode")
-        if rag_mode:
-            settings.RAG_MODE = rag_mode
-            from app.core.rag_engine import RAGEngine
-            self.rag_engine = RAGEngine()
-            self.rag_engine.initialize()
-
-        # ── 并发评估 ──
+        # rag_mode仅作为报告标签，不影响引擎行为
         eval_runner = EvalRunner(self.rag_engine)
         max_workers = settings.EVAL_MAX_CONCURRENT
         sorted_indices = sorted(indices_to_eval)
@@ -567,10 +569,6 @@ class PersistentEvalManager:
             print(f"[PersistentEval] 任务 {task_id} 整体失败: {e}")
             return
 
-        finally:
-            if rag_mode:
-                settings.RAG_MODE = original_mode
-
         # ── 全部完成 → 运行RAGAS批量评分 + 生成最终报告 ──
         all_results = _load_results(task_id)
         success_results = [r for r in all_results if r.get("status") == "success"]
@@ -593,6 +591,10 @@ class PersistentEvalManager:
 
         # 生成汇总报告
         task = _load_task(task_id)
+        if task is None:
+            print(f"[PersistentEval] 任务 {task_id} 状态丢失，跳过报告生成")
+            self._running_tasks.pop(task_id, None)
+            return
         report = self._compute_report(task, success_results, failed_results)
         if full_report:
             report["ragas_full"] = full_report
@@ -616,6 +618,9 @@ class PersistentEvalManager:
             "index": idx,
             "question": item["question"],
             "question_type": item.get("question_type", "retrieve"),
+            "difficulty": item.get("difficulty", ""),
+            "test_dimension": item.get("test_dimension", ""),
+            "eval_subset": item.get("eval_subset", ["full"]),
             "law": item.get("law", ""),
             "ground_truth": item["ground_truth"],
             "relevant_articles": item.get("relevant_articles", []),
@@ -626,14 +631,21 @@ class PersistentEvalManager:
         }
 
         try:
-            response = eval_runner.rag_engine.chat(
-                ChatRequest(question=item["question"], skip_guardrails=True), use_reranker=True
-            )
+            import asyncio
+            loop = asyncio.new_event_loop()
+            try:
+                response = loop.run_until_complete(
+                    eval_runner.rag_engine.chat(
+                        ChatRequest(question=item["question"], skip_guardrails=True), use_reranker=True
+                    )
+                )
+            finally:
+                loop.close()
             record["answer"] = response.answer
             # 优先使用完整contexts（不截断），避免RAGAS误判幻觉
             record["contexts"] = response.full_contexts if response.full_contexts else [src.content for src in response.sources]
             record["sources"] = [{"source": s.source, "content": s.content} for s in response.sources]
-            record["rag_mode"] = response.rag_mode
+            record["rag_mode"] = "agent"
         except Exception as e:
             record["status"] = "failed"
             record["error"] = f"答案生成失败: {str(e)[:200]}"
@@ -650,7 +662,7 @@ class PersistentEvalManager:
         """对已完成的全部题目运行RAGAS评分 + 检索指标 + 响应指标。"""
         from datasets import Dataset
         from ragas import evaluate as ragas_evaluate, RunConfig
-        from ragas.metrics import faithfulness, context_precision, context_recall
+        from ragas.metrics import faithfulness
         from app.evaluation.retrieval_metrics import (
             compute_retrieval_metrics, compute_retrieval_metrics_by_type,
         )
@@ -683,7 +695,7 @@ class PersistentEvalManager:
         })
 
         scores, type_scores, faithfulness_per_query = {}, {}, []
-        metrics = [faithfulness, context_precision, context_recall]  # 不含answer_relevancy（部分API不支持n>1）
+        metrics = [faithfulness]  # 只保留faithfulness（核心指标），context_precision/recall与检索指标重叠且不稳定
 
         for attempt in range(1, eval_runner.MAX_RETRIES + 1):
             try:
@@ -722,12 +734,16 @@ class PersistentEvalManager:
 
         # ── 响应指标 ──
         print("[PersistentEval] Phase 3b: 响应指标...")
+        # 拼接contexts为字符串列表，供完整性评估使用
+        contexts_str_list = ["\n".join(ctx) if isinstance(ctx, list) else str(ctx) for ctx in contexts]
         response_metrics = compute_response_metrics(
             answers, ground_truths, faithfulness_scores=faithfulness_per_query, llm=eval_runner.ragas_llm,
+            contexts_list=contexts_str_list,
         )
         type_response = compute_response_metrics_by_type(
             answers, ground_truths, question_types,
             faithfulness_scores=faithfulness_per_query, llm=eval_runner.ragas_llm,
+            contexts_list=contexts_str_list,
         )
 
         # ── 回写每题指标到结果jsonl ──
@@ -751,12 +767,12 @@ class PersistentEvalManager:
         if not scores:
             print("[PersistentEval] ⚠️ RAGAS评分全部失败，报告中RAGAS指标不可用")
         triad = {
-            "context_relevancy": scores.get("context_recall") or 0.0,
             "faithfulness": scores.get("faithfulness") or 0.0,
-            # answer_relevancy已移除（部分API不支持n>1）
         }
         details = [
             {"question": r.get("question", ""), "question_type": r.get("question_type", "retrieve"),
+             "difficulty": r.get("difficulty", ""), "test_dimension": r.get("test_dimension", ""),
+             "eval_subset": r.get("eval_subset", ["full"]),
              "law": r.get("law", ""), "answer": r.get("answer", ""),
              "ground_truth": r.get("ground_truth", ""),
              "relevant_articles": r.get("relevant_articles", []),
@@ -773,7 +789,7 @@ class PersistentEvalManager:
             "scores": scores, "type_scores": type_scores,
             "type_retrieval": {k: strip_per_query(v) for k, v in type_retrieval.items()},
             "type_response": {k: strip_per_query(v) for k, v in type_response.items()},
-            "rag_mode": _load_task(task_id).get("rag_mode") or "unknown",
+            "rag_mode": (_load_task(task_id) or {}).get("rag_mode") or "unknown",
             "sample_count": len(success_results),
             "details": details,
         }

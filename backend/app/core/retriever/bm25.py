@@ -7,9 +7,15 @@ from langchain_core.documents import Document
 from app.core.retriever.base import BaseRetriever
 from app.config import settings
 
+# ── 加载法律专属自定义词典（确保专业术语不被切碎） ──
+_LAW_DICT_PATH = os.path.join(os.path.dirname(__file__), "law_dict.txt")
+if os.path.exists(_LAW_DICT_PATH):
+    jieba.load_userdict(_LAW_DICT_PATH)
+    print(f"[BM25] 已加载法律自定义词典: {_LAW_DICT_PATH}")
+
 
 class BM25Retriever(BaseRetriever):
-    """BM25关键词检索器，基于jieba中文分词。"""
+    """BM25关键词检索器，基于jieba中文分词+法律专属词典。"""
 
     def __init__(self):
         self.documents: List[Document] = []

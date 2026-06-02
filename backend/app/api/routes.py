@@ -37,11 +37,10 @@ def set_engine(rag_engine: RAGEngine):
 
 
 @router.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest):
+async def chat(request: ChatRequest):
     """智能问答接口。
 
-    使用同步def而非async def，FastAPI会在线程池中运行，
-    避免CRAG的同步阻塞调用卡住整个事件循环。
+    异步处理，与FastAPI事件循环对齐，避免线程池开销。
     """
     if not engine or not engine.is_ready:
         raise HTTPException(
@@ -49,7 +48,7 @@ def chat(request: ChatRequest):
             detail="知识库未就绪，请先构建知识库。",
         )
     try:
-        return engine.chat(request)
+        return await engine.chat(request)
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -165,9 +164,9 @@ def delete_document(filename: str):
     return {"message": f"已删除 {filename}，请重建知识库以更新向量库。"}
 
 
-# ==================== V2 评估接口 ====================
+# ==================== 评估接口 ====================
 
-def _run_eval_task(sample_count, rag_mode, question_type):
+def _run_eval_task(sample_count, rag_mode, question_type, eval_subset, difficulty):
     """后台线程执行评估。"""
     from app.evaluation.eval_runner import EvalRunner
     from app.evaluation.eval_report import EvalReport
@@ -178,7 +177,9 @@ def _run_eval_task(sample_count, rag_mode, question_type):
     _eval_status["error"] = None
 
     try:
-        result = EvalRunner(engine).run(sample_count=sample_count, rag_mode=rag_mode, question_type=question_type)
+        result = EvalRunner(engine).run(sample_count=sample_count, rag_mode=rag_mode,
+                                        question_type=question_type, eval_subset=eval_subset,
+                                        difficulty=difficulty)
         filepath = EvalReport().save_result(result["rag_mode"], result)
         _eval_status["result"] = {"message": "评估完成", "report_path": filepath, **result}
         _eval_status["progress"] = "评估完成"
@@ -191,8 +192,14 @@ def _run_eval_task(sample_count, rag_mode, question_type):
 
 
 @router.post("/evaluation/run")
-async def run_evaluation(sample_count: int = None, rag_mode: str = None, question_type: str = None):
-    """启动RAGAS评估（后台异步执行）。"""
+async def run_evaluation(sample_count: int = None, rag_mode: str = None, question_type: str = None,
+                         eval_subset: str = None, difficulty: str = None):
+    """启动RAGAS评估（后台异步执行）。
+
+    Args:
+        eval_subset: 子集过滤(smoke=5题快速/full=20题全量)
+        difficulty: 难度过滤(easy/medium/hard)
+    """
     if not engine or not engine.is_ready:
         raise HTTPException(status_code=503, detail="知识库未就绪")
     if _eval_status["running"]:
@@ -200,7 +207,7 @@ async def run_evaluation(sample_count: int = None, rag_mode: str = None, questio
 
     thread = threading.Thread(
         target=_run_eval_task,
-        args=(sample_count, rag_mode, question_type),
+        args=(sample_count, rag_mode, question_type, eval_subset, difficulty),
         daemon=True,
     )
     thread.start()
@@ -274,12 +281,14 @@ async def create_persistent_task(
     sample_count: int = None,
     question_type: str = None,
     sample_offset: int = None,
+    eval_subset: str = None,
+    difficulty: str = None,
 ):
     """创建断点续评任务（不立即执行）。"""
     _require_engine()
     task_id = _get_persistent_manager().create_task(
         rag_mode=rag_mode, sample_count=sample_count, question_type=question_type,
-        sample_offset=sample_offset,
+        sample_offset=sample_offset, eval_subset=eval_subset, difficulty=difficulty,
     )
     return {"task_id": task_id, "message": "任务已创建"}
 

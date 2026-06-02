@@ -1,0 +1,99 @@
+{
+  "retriever_type": "agent",
+  "timestamp": "20260601_114604",
+  "triad": {
+    "faithfulness": 0.3125
+  },
+  "retrieval": {
+    "precision@1": 0.5,
+    "recall@5": 0.75
+  },
+  "response": {
+    "hallucination_rate": null,
+    "completeness": 0.0
+  },
+  "scores": {
+    "faithfulness": 0.3125
+  },
+  "type_scores": {
+    "compare": {
+      "faithfulness": 0.3125
+    }
+  },
+  "type_retrieval": {
+    "compare": {
+      "precision@1": 0.5,
+      "recall@5": 0.75
+    }
+  },
+  "type_response": {
+    "compare": {
+      "hallucination_rate": null,
+      "completeness": 0.0
+    }
+  },
+  "rag_mode": "agent",
+  "sample_count": 2,
+  "details": [
+    {
+      "question": "经济补偿金和赔偿金有什么区别？",
+      "question_type": "compare",
+      "law": "劳动合同法",
+      "answer": "根据现有资料无法回答经济补偿金的相关规定，仅能就赔偿金进行对比分析：\n\n1.  法律依据\n    *   概念A（经济补偿金）：未找到相关法条。\n    *   概念B（赔偿金）：[《劳动合同法》第八十七条]、[《劳动合同法》第四十八条]。\n\n2.  适用条件\n    *   概念A（经济补偿金）：未找到相关法条。\n    *   概念B（赔偿金）：用人单位违反本法规定解除或者终止劳动合同，且劳动者不要求继续履行劳动合同或者劳动合同已经不能继续履行 [《劳动合同法》第四十八条]。\n\n3.  计算方式/标准\n    *   概念A（经济补偿金）：未找到相关法条。\n    *   概念B（赔偿金）：依照本法第四十七条规定的经济补偿标准的二倍支付 [《劳动合同法》第八十七条]。\n\n4.  关键区别\n    *   概念A（经济补偿金）：未找到相关法条。\n    *   概念B（赔偿金）：法条明确规定了违法解除或终止劳动合同情形下的二倍支付标准及继续履行与支付赔偿金的选择关系 [《劳动合同法》第八十七条]、[《劳动合同法》第四十八条]。",
+      "ground_truth": "经济补偿金是合法解除或终止劳动合同时用人单位支付给劳动者的补偿，按工作年限计算（每满一年支付一个月工资）；赔偿金是用人单位违法解除或终止劳动合同时支付的惩罚性赔偿，标准为经济补偿金的二倍。",
+      "relevant_articles": [
+        "劳动合同法第47条",
+        "劳动合同法第87条"
+      ],
+      "source_count": 0,
+      "rag_mode": "agent",
+      "retrieval": {
+        "precision@1": 0.0,
+        "recall@5": 0.0
+      },
+      "retrieved_ids": [],
+      "relevant_ids": [
+        "劳动合同法第47条",
+        "劳动合同法第87条"
+      ],
+      "faithfulness": 0.3125,
+      "response": {
+        "hallucination_rate": 0.6875,
+        "completeness": 0.0
+      }
+    },
+    {
+      "question": "固定期限和无固定期限劳动合同有什么区别？",
+      "question_type": "compare",
+      "law": "劳动合同法",
+      "answer": "",
+      "ground_truth": "固定期限劳动合同是约定合同终止时间的劳动合同；无固定期限劳动合同是没有约定终止时间的劳动合同。连续工作满十年或连续订立二次固定期限劳动合同后，劳动者有权要求签订无固定期限劳动合同。",
+      "relevant_articles": [
+        "劳动合同法第14条",
+        "劳动合同法第12条"
+      ],
+      "source_count": 5,
+      "rag_mode": "agent",
+      "retrieval": {
+        "precision@1": 1.0,
+        "recall@5": 1.5
+      },
+      "retrieved_ids": [
+        "劳动合同法第14条",
+        "劳动合同法第14条",
+        "劳动合同法第12条",
+        "劳动合同法第39条",
+        "劳动合同法第82条"
+      ],
+      "relevant_ids": [
+        "劳动合同法第14条",
+        "劳动合同法第12条"
+      ],
+      "faithfulness": null,
+      "response": {
+        "hallucination_rate": null,
+        "completeness": 0.0
+      }
+    }
+  ]
+}

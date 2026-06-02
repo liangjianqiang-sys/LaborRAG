@@ -22,8 +22,7 @@ export interface ChatResponse {
   answer: string
   sources: SourceDocument[]
   conversation_id: string
-  rag_mode: string
-  crag_steps: string[]
+  rag_steps: string[]
   rewritten_question: string
   confidence: number
   disclaimer: boolean
@@ -177,10 +176,7 @@ export interface EvalComparison {
 export interface Observability {
   retrieval_quality: {
     'precision@1': number
-    'precision@5': number
     'recall@5': number
-    'mrr': number
-    corpus_coverage: number
   }
   generation_quality: {
     faithfulness: number
@@ -279,12 +275,16 @@ export async function createPersistentTask(
   sampleCount?: number,
   questionType?: string,
   sampleOffset?: number,
+  evalSubset?: string,
+  difficulty?: string,
 ): Promise<{ task_id: string; message: string }> {
   const params = new URLSearchParams()
   if (ragMode) params.set('rag_mode', ragMode)
   if (sampleCount) params.set('sample_count', String(sampleCount))
   if (questionType) params.set('question_type', questionType)
   if (sampleOffset) params.set('sample_offset', String(sampleOffset))
+  if (evalSubset) params.set('eval_subset', evalSubset)
+  if (difficulty) params.set('difficulty', difficulty)
   const qs = params.toString() ? `?${params.toString()}` : ''
   const res = await fetch(`${API_BASE}/evaluation/persistent/create${qs}`, {
     method: 'POST',

@@ -65,21 +65,16 @@ class Settings:
     TOP_K: int = int(os.getenv("TOP_K", "12"))
     SCORE_THRESHOLD: float = float(os.getenv("SCORE_THRESHOLD", "0.15"))
 
-    # 混合检索配置 (V2)
-    VECTOR_WEIGHT: float = float(os.getenv("VECTOR_WEIGHT", "0.45"))  # 向量检索权重
-    BM25_WEIGHT: float = float(os.getenv("BM25_WEIGHT", "0.55"))      # BM25检索权重
+    # 混合检索配置
+    VECTOR_WEIGHT: float = float(os.getenv("VECTOR_WEIGHT", "0.5"))   # 向量检索权重（与BM25等权，Reranker负责精排）
+    BM25_WEIGHT: float = float(os.getenv("BM25_WEIGHT", "0.5"))       # BM25检索权重（关键词精确匹配补充）
     RRF_K: int = int(os.getenv("RRF_K", "60"))                       # RRF常数
 
-    # 重排序配置 (V2)
+    # 重排序配置
     RERANKER_MODEL_NAME: str = os.getenv("RERANKER_MODEL_NAME", "BAAI/bge-reranker-v2-m3")
     RERANK_TOP_K: int = int(os.getenv("RERANK_TOP_K", "12"))          # 重排序后返回数量
-    RERANK_SCORE_THRESHOLD: float = float(os.getenv("RERANK_SCORE_THRESHOLD", "0.0"))  # CrossEncoder原始分数阈值(>0相关,<0不相关)
+    RERANK_SCORE_THRESHOLD: float = float(os.getenv("RERANK_SCORE_THRESHOLD", "0.3"))  # CrossEncoder原始分数阈值(>0相关,<0不相关)
 
-    # 上下文压缩配置 (V3)
-    COMPRESSION_THRESHOLD: float = float(os.getenv("COMPRESSION_THRESHOLD", "0.35"))  # EmbeddingsFilter相似度阈值
-
-    # RAG模式配置 (V3/V4)
-    RAG_MODE: str = os.getenv("RAG_MODE", "simple")  # simple | crag | agent
 
     # 检索验证配置（两步生成开关）
     RETRIEVAL_VALIDATION: bool = os.getenv("RETRIEVAL_VALIDATION", "true").lower() == "true"  # 检索充分性验证，关闭则跳过直接生成

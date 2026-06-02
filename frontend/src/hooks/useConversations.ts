@@ -5,9 +5,8 @@ export interface Message {
   role: 'user' | 'assistant'
   content: string
   sources?: { content: string; source: string; score: number; page?: number }[]
-  cragSteps?: string[]
+  ragSteps?: string[]
   rewrittenQuestion?: string
-  ragMode?: string
   confidence?: number
   disclaimer?: boolean
 }
@@ -106,7 +105,7 @@ export function useConversations() {
             messages: newMessages,
             title: c.messages.length === 0 ? deriveTitle(newMessages) : c.title,
             conversationId:
-              message.role === 'assistant' && message.ragMode
+              message.role === 'assistant' && message.ragSteps
                 ? message.id  // 使用后端返回的 conversation_id
                 : c.conversationId,
             updatedAt: Date.now(),

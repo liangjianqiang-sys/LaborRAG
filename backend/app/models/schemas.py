@@ -34,12 +34,12 @@ class ChatResponse(BaseModel):
     answer: str = Field(..., description="AI回答")
     sources: list[SourceDocument] = Field(default_factory=list, description="参考来源")
     conversation_id: str = Field(..., description="会话ID")
-    rag_mode: str = Field("simple", description="RAG模式: simple | crag | agent")
-    crag_steps: list[str] = Field(default_factory=list, description="CRAG工作流步骤记录")
-    rewritten_question: str = Field("", description="改写后的问题（CRAG模式）")
+    rag_steps: list[str] = Field(default_factory=list, description="RAG工作流步骤记录")
+    rewritten_question: str = Field("", description="改写后的问题")
     confidence: float = Field(0.0, description="回答置信度(0-1)，低于0.5时建议咨询律师")
     disclaimer: bool = Field(True, description="是否已追加免责声明")
-    full_contexts: list[str] = Field(default_factory=list, description="完整检索文档内容（供评估使用，不截断）")
+    full_contexts: list[str] = Field(default_factory=list, description="完整检索文档内容（父块，供Faithfulness评估使用）")
+    child_contexts: list[str] = Field(default_factory=list, description="子块精准段落（供Context Precision/Recall评估使用）")
 
 
 class KnowledgeBaseStatus(BaseModel):

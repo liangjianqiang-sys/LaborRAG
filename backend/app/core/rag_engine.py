@@ -9,16 +9,17 @@ from app.core.retriever.base import BaseRetriever
 from app.core.retriever.vector import VectorRetriever
 from app.core.retriever.bm25 import BM25Retriever
 from app.core.retriever.hybrid import HybridRetriever
-from app.core.generator.base import BaseGenerator
-from app.core.generator.simple_chain import SimpleChainGenerator
 from app.core.conversation import conversation_manager
 from app.models.schemas import ChatRequest, ChatResponse, SourceDocument, MessageRole
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from app.core.generator.prompts import ANSWER_STYLE_RULES
 
 
 class RAGEngine:
     """RAG引擎，整合检索和生成，对外提供统一接口。
 
-    通过retriever和generator的抽象，V2/V3只需替换实现类即可升级。
+    固定使用Agentic RAG工作流，异常时降级到SimpleChain。
     """
 
     def __init__(self):
@@ -32,26 +33,14 @@ class RAGEngine:
         self._eval_retriever = None
         self._eval_retriever_lock = threading.Lock()
 
-        # 根据RAG_MODE选择生成器
-        if settings.RAG_MODE == "agent":
-            from app.core.generator.agent_graph import AgenticRAGGraph
-            self.agent_graph = AgenticRAGGraph(self.retriever)
-            self.crag_graph = None
-            self.generator: BaseGenerator = SimpleChainGenerator()  # fallback
-            print(f"   Generator: Agentic RAG (multi-agent)")
-            # 启动时预加载Reranker，避免首次聊天卡顿
-            _ = self.eval_retriever
-        elif settings.RAG_MODE == "crag":
-            from app.core.generator.crag_graph import AdaptiveRAGGraph
-            self.crag_graph = AdaptiveRAGGraph(self.retriever)
-            self.agent_graph = None
-            self.generator: BaseGenerator = SimpleChainGenerator()  # fallback
-            print(f"   Generator: Adaptive RAG (complexity-based routing)")
-        else:
-            self.crag_graph = None
-            self.agent_graph = None
-            self.generator: BaseGenerator = SimpleChainGenerator()
-            print(f"   Generator: SimpleChain")
+        # Agentic RAG工作流（主链路）
+        from app.core.generator.agent_graph import AgenticRAGGraph
+        self.agent_graph = AgenticRAGGraph(self.retriever)
+        # 降级兜底LLM（懒加载）
+        self._fallback_llm = None
+        print(f"   Generator: Agentic RAG")
+        # 启动时预加载Reranker，避免首次聊天卡顿
+        _ = self.eval_retriever
 
     def _create_retriever(self) -> BaseRetriever:
         """根据RETRIEVER_TYPE配置创建检索器。"""
@@ -148,8 +137,8 @@ class RAGEngine:
 
         return chunk_count > 0
 
-    def chat(self, request: ChatRequest, use_reranker: bool = False) -> ChatResponse:
-        """核心问答方法：根据RAG_MODE选择simple或crag链路，支持多轮对话。"""
+    async def chat(self, request: ChatRequest, use_reranker: bool = False) -> ChatResponse:
+        """核心问答方法：Agentic RAG工作流，支持多轮对话。"""
         conversation_id = request.conversation_id or str(uuid.uuid4())
 
         # 记录用户消息到对话历史
@@ -167,61 +156,25 @@ class RAGEngine:
                     lines.append(f"助手: {msg.content}")
             conversation_context = "\n".join(lines)
 
-        if settings.RAG_MODE == "agent" and self.agent_graph:
-            # V4: Agentic RAG多Agent协作
+        # Agentic RAG工作流
+        try:
+            # 评估时临时切换为Reranker检索器
+            if use_reranker:
+                orig_retriever = self.agent_graph.retriever
+                self.agent_graph.retriever = self.eval_retriever
             try:
-                # 评估时临时切换为Reranker检索器
+                result = await self.agent_graph.run(request.question, conversation_context=conversation_context, skip_guardrails=request.skip_guardrails)
+            finally:
                 if use_reranker:
-                    orig_retriever = self.agent_graph.retriever
-                    self.agent_graph.retriever = self.eval_retriever
-                try:
-                    result = self.agent_graph.run(request.question, conversation_context=conversation_context, skip_guardrails=request.skip_guardrails)
-                finally:
-                    if use_reranker:
-                        self.agent_graph.retriever = orig_retriever
-                answer = result["answer"]
-                relevant_docs = result["context_docs"]
-                crag_steps = result.get("steps", [])
-                rewritten_question = result.get("intent", "")
-                rag_mode = "agent"
-            except Exception as e:
-                answer, relevant_docs, crag_steps, rewritten_question, rag_mode = \
-                    self._fallback_simple(request.question, f"Agent降级: {str(e)[:50]}", "agent_fallback")
-        elif settings.RAG_MODE == "crag" and self.crag_graph:
-            # V3: Adaptive RAG自适应工作流（支持多轮对话上下文）
-            try:
-                if use_reranker:
-                    orig_retriever = self.crag_graph.retriever
-                    self.crag_graph.retriever = self.eval_retriever
-                try:
-                    result = self.crag_graph.run(request.question, conversation_context=conversation_context, skip_guardrails=request.skip_guardrails)
-                finally:
-                    if use_reranker:
-                        self.crag_graph.retriever = orig_retriever
-                answer = result["answer"]
-                relevant_docs = result["context_docs"]
-                crag_steps = result.get("steps", [])
-                rewritten_question = result.get("rewritten_question", "")
-                rag_mode = "crag"
-            except Exception as e:
-                answer, relevant_docs, crag_steps, rewritten_question, rag_mode = \
-                    self._fallback_simple(request.question, f"CRAG降级: {str(e)[:50]}", "crag_fallback")
-        else:
-            # V1/V2: 简单链路（评估时用Reranker提高精确率）
-            retriever = self.eval_retriever if use_reranker else self.retriever
-            relevant_docs = retriever.retrieve(
-                query=request.question,
-                k=settings.TOP_K,
-                score_threshold=settings.SCORE_THRESHOLD,
-            )
-            answer = self.generator.generate(
-                question=request.question,
-                context_docs=relevant_docs,
-                skip_guardrails=request.skip_guardrails,
-            )
-            crag_steps = []
-            rewritten_question = ""
-            rag_mode = "simple"
+                    self.agent_graph.retriever = orig_retriever
+            answer = result["answer"]
+            relevant_docs = result["context_docs"]
+            rag_steps = result.get("steps", [])
+            rewritten_question = result.get("intent", "")
+        except Exception as e:
+            # 降级到SimpleChain
+            answer, relevant_docs, rag_steps, rewritten_question = \
+                self._fallback_simple(request.question, f"Agent降级: {str(e)[:50]}")
 
         # 记录助手回答到对话历史
         conversation_manager.add_message(conversation_id, MessageRole.ASSISTANT, answer)
@@ -244,8 +197,34 @@ class RAGEngine:
             for doc, score in relevant_docs
         ]
 
-        # 完整contexts（供评估使用，不截断）
+        # 完整contexts（父块，供Faithfulness评估使用）
         full_contexts = [doc.page_content for doc, score in relevant_docs]
+        # 子块精准段落（供Context Precision/Recall评估使用）
+        child_contexts = []
+        for doc, score in relevant_docs:
+            if doc.metadata.get("chunk_type") == "parent":
+                # 父块：从parent_store中查找对应的子块
+                parent_id = doc.metadata.get("parent_id", "")
+                if parent_id and hasattr(self.vector_store_manager, 'parent_store'):
+                    # 从parent_store中无法直接反查子块，改用向量库similarity_search
+                    # 但更简单的方式：从父块文本中按款项拆分
+                    from app.core.generator.helpers import _is_clause_line
+                    lines = [l.strip() for l in doc.page_content.split("\n") if l.strip()]
+                    current_para = []
+                    for line in lines:
+                        if _is_clause_line(line) or (current_para and line.startswith("第")):
+                            if current_para:
+                                child_contexts.append("\n".join(current_para))
+                            current_para = [line]
+                        else:
+                            current_para.append(line)
+                    if current_para:
+                        child_contexts.append("\n".join(current_para))
+                else:
+                    child_contexts.append(doc.page_content)
+            else:
+                # 子块或fallback，直接使用
+                child_contexts.append(doc.page_content)
         # 将计算器结果纳入评估上下文，确保RAGAS能看到计算器引用的法条
         calc_result = result.get("calculation_result", "") if isinstance(result, dict) else ""
         if calc_result:
@@ -255,12 +234,12 @@ class RAGEngine:
             answer=answer,
             sources=sources,
             conversation_id=conversation_id,
-            rag_mode=rag_mode,
-            crag_steps=crag_steps,
+            rag_steps=rag_steps,
             rewritten_question=rewritten_question,
             confidence=confidence,
             disclaimer=True,
             full_contexts=full_contexts,
+            child_contexts=child_contexts,
         )
 
     @property
@@ -313,19 +292,43 @@ class RAGEngine:
         confidence = min(base + count_bonus, 1.0)
         return round(confidence, 2)
 
-    def _fallback_simple(self, question: str, step_msg: str, rag_mode: str, use_reranker: bool = False):
-        """工作流异常时降级到simple链路。"""
+    @property
+    def fallback_llm(self):
+        """降级兜底LLM（懒加载）。"""
+        if self._fallback_llm is None:
+            self._fallback_llm = ChatOpenAI(
+                model=settings.LLM_MODEL_NAME,
+                openai_api_key=settings.LLM_API_KEY,
+                openai_api_base=settings.LLM_API_BASE,
+                temperature=settings.LLM_TEMPERATURE,
+                max_tokens=settings.LLM_MAX_TOKENS,
+                extra_body={"enable_thinking": False},
+            )
+        return self._fallback_llm
+
+    def _fallback_simple(self, question: str, step_msg: str, use_reranker: bool = False):
+        """工作流异常时降级：检索+直接生成。"""
         retriever = self.eval_retriever if use_reranker else self.retriever
         relevant_docs = retriever.retrieve(
             query=question,
             k=settings.TOP_K,
             score_threshold=settings.SCORE_THRESHOLD,
         )
-        answer = self.generator.generate(
-            question=question,
-            context_docs=relevant_docs,
+        context = "\n\n".join(
+            f"[来源：{doc.metadata.get('source', '未知')}]\n{doc.page_content}"
+            for doc, score in relevant_docs
+        ) if relevant_docs else "未找到相关参考资料。"
+
+        prompt = ChatPromptTemplate.from_template(
+            "{style_rules}\n\n参考资料：\n{context}\n\n用户问题：{question}\n\n请基于以上参考资料回答用户的问题："
         )
-        return answer, relevant_docs, [step_msg], "", rag_mode
+        chain = prompt | self.fallback_llm
+        answer = chain.invoke({
+            "context": context,
+            "question": question,
+            "style_rules": ANSWER_STYLE_RULES,
+        }).content
+        return answer, relevant_docs, [step_msg], ""
 
     def add_document(self, filepath: str) -> int:
         """添加单个文档到向量库。"""

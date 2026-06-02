@@ -89,7 +89,7 @@ class _N1ChatModel(BaseChatModel):
 class EvalRunner:
     """评估执行器，对RAG系统进行三元组量化评估。"""
 
-    METRICS = [faithfulness, context_precision, context_recall]  # 不含answer_relevancy（部分API不支持n>1）
+    METRICS = [faithfulness, context_precision, context_recall]  # 双轨：child→Precision/Recall，parent→Faithfulness
     MAX_RETRIES = 3  # RAGAS评分最大重试次数
 
     def __init__(self, rag_engine):
@@ -105,54 +105,67 @@ class EvalRunner:
             request_timeout=180,
             extra_body=extra_body,
         )
-        # 包装为n=1兼容模型
-        self.ragas_llm = _N1ChatModel(base=base_llm)
+        # RAGAS 0.4.3: 直接传ChatOpenAI，不再用_N1ChatModel包装
+        # 原因：RAGAS内部用LangchainLLMWrapper调用agenerate_prompt，
+        # _N1ChatModel只覆写同步_generate，异步调用会失败
+        # 当前metrics不含answer_relevancy（不需要n>1），无需n=1包装
+        self.ragas_llm = base_llm
         self.ragas_embeddings = get_embeddings()
 
-    def run(self, sample_count: int = None, rag_mode: str = None, question_type: str = None) -> Dict[str, Any]:
+    def run(self, sample_count: int = None, rag_mode: str = None, question_type: str = None,
+            eval_subset: str = None, difficulty: str = None) -> Dict[str, Any]:
         """运行评估（三阶段：生成答案 → 检索指标 → RAGAS+响应指标）。
 
         Args:
             sample_count: 评估样本数量，None表示全部
-            rag_mode: 指定RAG模式评估，None使用当前配置
-            question_type: 过滤问题类型(retrieve/calculate/compare)，None表示全部
+            rag_mode: 评估标签（仅用于报告标识，不影响引擎行为）
+            question_type: 过滤问题类型(retrieve/calculate/compare/out_of_scope)，None表示全部
+            eval_subset: 子集过滤(smoke/full)，None表示全部
+            difficulty: 难度过滤(easy/medium/hard)，None表示全部
         """
         dataset = EVAL_DATASET
         if question_type:
             dataset = [d for d in dataset if d.get("question_type") == question_type]
+        if eval_subset:
+            dataset = [d for d in dataset if eval_subset in d.get("eval_subset", ["full"])]
+        if difficulty:
+            dataset = [d for d in dataset if d.get("difficulty") == difficulty]
         dataset = dataset[:sample_count] if sample_count else dataset
 
-        original_mode = settings.RAG_MODE
-        if rag_mode:
-            settings.RAG_MODE = rag_mode
-            from app.core.rag_engine import RAGEngine
-            self.rag_engine = RAGEngine()
-            self.rag_engine.initialize()
-
-        try:
-            return self._execute(dataset, rag_mode or original_mode)
-        finally:
-            if rag_mode:
-                settings.RAG_MODE = original_mode
+        return self._execute(dataset, rag_mode or "agent")
 
     def _gen_answer(self, item: dict) -> dict:
         """单题答案生成（供并发调用）。返回结果dict，异常时返回None。"""
+        import asyncio
         from app.models.schemas import ChatRequest
         try:
-            response = self.rag_engine.chat(ChatRequest(question=item["question"], skip_guardrails=True), use_reranker=True)
-            # 优先使用完整contexts（不截断），避免RAGAS误判幻觉
+            # 在 ThreadPoolExecutor 中需要新建事件循环，不能复用 uvicorn 的
+            loop = asyncio.new_event_loop()
+            try:
+                response = loop.run_until_complete(
+                    self.rag_engine.chat(ChatRequest(question=item["question"], skip_guardrails=True), use_reranker=True)
+                )
+            finally:
+                loop.close()
+            # 父块contexts（供Faithfulness评估）：完整法条，LLM基于此生成
             contexts = response.full_contexts if response.full_contexts else [src.content for src in response.sources]
+            # 子块contexts（供Context Precision/Recall评估）：精准段落，反映检索器真实命中
+            child_contexts = response.child_contexts if response.child_contexts else contexts
             return {
                 "question": item["question"],
                 "answer": response.answer,
                 "contexts": contexts,
+                "child_contexts": child_contexts,
                 "ground_truth": item["ground_truth"],
                 "relevant_articles": item.get("relevant_articles", []),
                 "question_type": item.get("question_type", "retrieve"),
+                "difficulty": item.get("difficulty", ""),
+                "test_dimension": item.get("test_dimension", ""),
+                "eval_subset": item.get("eval_subset", ["full"]),
                 "law": item.get("law", ""),
                 "sources": [{"source": s.source, "content": s.content} for s in response.sources],
                 "source_count": len(response.sources),
-                "rag_mode": response.rag_mode,
+                "rag_mode": "agent",
             }
         except Exception as e:
             print(f"  生成失败: {item['question'][:30]}... → {e}")
@@ -192,6 +205,9 @@ class EvalRunner:
                 details.append({
                     "question": item["question"],
                     "question_type": item.get("question_type", "retrieve"),
+                    "difficulty": item.get("difficulty", ""),
+                    "test_dimension": item.get("test_dimension", ""),
+                    "eval_subset": item.get("eval_subset", ["full"]),
                     "law": item.get("law", ""),
                     "answer": "", "ground_truth": item["ground_truth"],
                     "relevant_articles": item.get("relevant_articles", []),
@@ -208,6 +224,9 @@ class EvalRunner:
             details.append({
                 "question": result["question"],
                 "question_type": result["question_type"],
+                "difficulty": result["difficulty"],
+                "test_dimension": result["test_dimension"],
+                "eval_subset": result["eval_subset"],
                 "law": result["law"],
                 "answer": result["answer"],
                 "ground_truth": result["ground_truth"],
@@ -233,22 +252,34 @@ class EvalRunner:
             details[i]["relevant_ids"] = pq.get("relevant_ids", [])
         print(f"[Phase 2] Done. retrieval={_summary(retrieval)}")
 
-        # ── 阶段3：RAGAS + 响应指标（token消耗30-40%，可重试）──
+        # ── 阶段3：RAGAS双轨评分（token消耗30-40%，可重试）──
+        # 收集child_contexts（供Precision/Recall评估）
+        child_contexts_list = []
+        for i, result in enumerate(gen_results):
+            if result is None or isinstance(result, Exception):
+                child_contexts_list.append(contexts[i])  # fallback to parent
+            else:
+                child_contexts_list.append(result.get("child_contexts", contexts[i]))
+
         scores, type_scores, faithfulness_per_query = self._score_with_retry(
-            questions, answers, contexts, ground_truths, details
+            questions, answers, contexts, child_contexts_list, ground_truths, details
         )
 
         # 响应指标（ROUGE-L/BLEU零成本，幻觉率复用faithfulness，完整性需LLM）
         print(f"[Phase 3] Computing response metrics...")
+        # 拼接contexts为字符串列表，供完整性评估使用
+        contexts_str_list = ["\n".join(ctx) if isinstance(ctx, list) else str(ctx) for ctx in contexts]
         response_metrics = compute_response_metrics(
             answers, ground_truths,
             faithfulness_scores=faithfulness_per_query,
             llm=self.ragas_llm,  # 复用评估LLM计算完整性
+            contexts_list=contexts_str_list,
         )
         type_response = compute_response_metrics_by_type(
             answers, ground_truths, question_types,
             faithfulness_scores=faithfulness_per_query,
             llm=self.ragas_llm,
+            contexts_list=contexts_str_list,
         )
         # 将每题faithfulness写入details
         for i, f in enumerate(faithfulness_per_query):
@@ -258,11 +289,31 @@ class EvalRunner:
             details[i]["response"] = pq
         print(f"[Phase 3] Done. response={_summary(response_metrics)}")
 
-        # ── 构建三元组核心指标 ──
+        # ── 按难度分组统计 ──
+        difficulty_scores = {}
+        difficulty_retrieval = {}
+        for diff in ("easy", "medium", "hard"):
+            idxs = [i for i, d in enumerate(details) if d.get("difficulty") == diff]
+            if not idxs:
+                continue
+            # 检索指标
+            diff_sources = [sources_raw[i] for i in idxs]
+            diff_articles = [relevant_articles_list[i] for i in idxs]
+            difficulty_retrieval[diff] = strip_per_query(
+                compute_retrieval_metrics(diff_sources, diff_articles, k=5)
+            )
+            # RAGAS指标
+            if scores:
+                diff_faith = [details[i].get("faithfulness") for i in idxs]
+                diff_faith_vals = [v for v in diff_faith if v is not None]
+                difficulty_scores[diff] = {
+                    "faithfulness": round(sum(diff_faith_vals) / len(diff_faith_vals), 4) if diff_faith_vals else None,
+                    "count": len(idxs),
+                }
+
+        # ── 构建核心指标 ──
         triad = {
-            "context_relevancy": scores.get("context_recall") or 0.0,
             "faithfulness": scores.get("faithfulness") or 0.0,
-            # answer_relevancy已移除（部分API不支持n>1）
         }
 
         return {
@@ -273,16 +324,29 @@ class EvalRunner:
             "type_scores": type_scores,
             "type_retrieval": {k: strip_per_query(v) for k, v in type_retrieval.items()},
             "type_response": {k: strip_per_query(v) for k, v in type_response.items()},
+            "difficulty_scores": difficulty_scores,
+            "difficulty_retrieval": difficulty_retrieval,
             "rag_mode": rag_mode_label,
             "sample_count": total,
             "details": details,
         }
 
-    def _score_with_retry(self, questions, answers, contexts, ground_truths, details) -> tuple:
-        """RAGAS评分，带重试逻辑。返回 (scores, type_scores, faithfulness_per_query)。"""
-        ds = Dataset.from_dict({
+    def _score_with_retry(self, questions, answers, parent_contexts, child_contexts, ground_truths, details) -> tuple:
+        """RAGAS双轨评分，带重试逻辑。返回 (scores, type_scores, faithfulness_per_query)。
+
+        双轨策略：
+        - Faithfulness用parent_contexts（完整法条，LLM基于此生成）
+        - Context Precision/Recall用child_contexts（精准段落，反映检索器真实命中）
+        """
+        # Faithfulness数据集：用父块contexts
+        ds_faith = Dataset.from_dict({
             "question": questions, "answer": answers,
-            "contexts": contexts, "ground_truth": ground_truths,
+            "contexts": parent_contexts, "ground_truth": ground_truths,
+        })
+        # Precision/Recall数据集：用子块contexts
+        ds_prec = Dataset.from_dict({
+            "question": questions, "answer": answers,
+            "contexts": child_contexts, "ground_truth": ground_truths,
         })
 
         for attempt in range(1, self.MAX_RETRIES + 1):
@@ -294,24 +358,45 @@ class EvalRunner:
                     max_wait=300,
                     max_workers=4,
                 )
-                result = evaluate(
-                    ds, metrics=self.METRICS,
+
+                # 1. Faithfulness（用父块contexts）
+                print(f"[Phase 3]   Faithfulness: parent contexts ({len(parent_contexts)} items)...")
+                faith_result = evaluate(
+                    ds_faith, metrics=[faithfulness],
                     llm=self.ragas_llm, embeddings=self.ragas_embeddings,
                     batch_size=3,
                     run_config=run_config,
                 )
-                result_df = result.to_pandas()
-                scores = _mean_scores(result_df)
+                faith_df = faith_result.to_pandas()
+
+                # 2. Context Precision/Recall（用子块contexts）
+                print(f"[Phase 3]   Precision/Recall: child contexts ({len(child_contexts)} items)...")
+                prec_result = evaluate(
+                    ds_prec, metrics=[context_precision, context_recall],
+                    llm=self.ragas_llm, embeddings=self.ragas_embeddings,
+                    batch_size=3,
+                    run_config=run_config,
+                )
+                prec_df = prec_result.to_pandas()
+
+                # 合并结果
+                scores = _mean_scores(faith_df)
+                prec_scores = _mean_scores(prec_df)
+                scores.update(prec_scores)
+
                 type_scores = {}
                 if any(d["question_type"] != "retrieve" for d in details):
-                    result_df["question_type"] = [d["question_type"] for d in details]
+                    faith_df["question_type"] = [d["question_type"] for d in details]
+                    prec_df["question_type"] = [d["question_type"] for d in details]
                     for qtype in set(d["question_type"] for d in details):
-                        type_scores[qtype] = _mean_scores(result_df[result_df["question_type"] == qtype])
+                        ts = _mean_scores(faith_df[faith_df["question_type"] == qtype])
+                        ts.update(_mean_scores(prec_df[prec_df["question_type"] == qtype]))
+                        type_scores[qtype] = ts
 
                 # 提取每题faithfulness（用于幻觉率计算）
                 faithfulness_per_query = []
-                if "faithfulness" in result_df.columns:
-                    for val in result_df["faithfulness"]:
+                if "faithfulness" in faith_df.columns:
+                    for val in faith_df["faithfulness"]:
                         try:
                             faithfulness_per_query.append(float(val))
                         except (TypeError, ValueError):

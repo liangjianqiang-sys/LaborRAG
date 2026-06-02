@@ -142,7 +142,7 @@ def hallucination_rate(faithfulness_score: float) -> float:
 
 # ── 完整性（LLM评估）──
 
-_COMPLETENESS_PROMPT = """你是一个评估专家。请判断生成的回答是否覆盖了参考答案中的关键信息点。
+_COMPLETENESS_PROMPT = """你是一个评估专家。请判断生成的回答是否覆盖了参考答案中的关键信息点，并是否充分利用了提供的参考资料。
 
 参考答案（ground_truth）:
 {ground_truth}
@@ -150,10 +150,14 @@ _COMPLETENESS_PROMPT = """你是一个评估专家。请判断生成的回答是
 生成的回答:
 {answer}
 
+参考资料（contexts）:
+{contexts}
+
 请按以下步骤评估：
 1. 从参考答案中提取关键信息点（法条编号、具体数字、核心规则等）
 2. 检查每个关键信息点是否在生成的回答中被覆盖
-3. 计算覆盖率 = 被覆盖的信息点数 / 总信息点数
+3. 如果参考资料中包含了相关法条但回答未引用，视为信息遗漏
+4. 计算覆盖率 = 被覆盖的信息点数 / 总信息点数
 
 请以JSON格式输出：
 {{"key_points": ["信息点1", "信息点2", ...], "covered": ["被覆盖的信息点", ...], "completeness": 0.75}}
@@ -161,19 +165,21 @@ _COMPLETENESS_PROMPT = """你是一个评估专家。请判断生成的回答是
 只输出JSON，不要其他内容。"""
 
 
-def completeness_llm(answer: str, ground_truth: str, llm) -> float:
+def completeness_llm(answer: str, ground_truth: str, llm, contexts: str = "") -> float:
     """使用LLM评估回答的完整性。
 
     Args:
         answer: 生成的回答
         ground_truth: 参考答案
         llm: LangChain ChatOpenAI实例
+        contexts: 检索到的参考资料文本
 
     Returns:
         完整性分数 (0.0-1.0)
     """
     prompt = _COMPLETENESS_PROMPT.format(
-        ground_truth=ground_truth, answer=answer
+        ground_truth=ground_truth, answer=answer,
+        contexts=contexts[:3000] if contexts else "（无参考资料）"
     )
     try:
         response = llm.invoke(prompt)
@@ -198,6 +204,7 @@ def compute_response_metrics(
     ground_truths: List[str],
     faithfulness_scores: Optional[List[float]] = None,
     llm=None,
+    contexts_list: Optional[List[str]] = None,
 ) -> Dict:
     """计算响应评估指标。
 
@@ -209,8 +216,6 @@ def compute_response_metrics(
 
     Returns:
         {
-            "rouge_l": 0.45,
-            "bleu": 0.32,
             "hallucination_rate": 0.28,  # 仅当faithfulness_scores提供时
             "completeness": 0.75,        # 仅当llm提供时
             "per_query": [...],
@@ -218,14 +223,11 @@ def compute_response_metrics(
     """
     n = len(answers)
     if n == 0:
-        return {"rouge_l": 0.0, "bleu": 0.0, "per_query": []}
+        return {"per_query": []}
 
     per_query = []
     for i in range(n):
-        pq = {
-            "rouge_l": round(rouge_l(answers[i], ground_truths[i]), 4),
-            "bleu": round(bleu(answers[i], ground_truths[i]), 4),
-        }
+        pq = {}
 
         # 幻觉率（复用faithfulness）
         if faithfulness_scores and i < len(faithfulness_scores):
@@ -233,15 +235,16 @@ def compute_response_metrics(
 
         # 完整性（LLM评估，较慢，按需启用）
         if llm is not None:
+            ctx = contexts_list[i] if contexts_list and i < len(contexts_list) else ""
             pq["completeness"] = round(
-                completeness_llm(answers[i], ground_truths[i], llm), 4
+                completeness_llm(answers[i], ground_truths[i], llm, contexts=ctx), 4
             )
 
         per_query.append(pq)
 
     # 计算均值
     metrics = {"per_query": per_query}
-    for key in ["rouge_l", "bleu", "hallucination_rate", "completeness"]:
+    for key in ["hallucination_rate", "completeness"]:
         values = [pq[key] for pq in per_query if key in pq]
         if values:
             metrics[key] = round(sum(values) / len(values), 4)
@@ -255,19 +258,23 @@ def compute_response_metrics_by_type(
     question_types: List[str],
     faithfulness_scores: Optional[List[float]] = None,
     llm=None,
+    contexts_list: Optional[List[str]] = None,
 ) -> Dict[str, Dict]:
     """按问题类型分组计算响应指标。"""
-    groups: Dict[str, Dict] = defaultdict(lambda: {"answers": [], "ground_truths": [], "faithfulness": []})
+    groups: Dict[str, Dict] = defaultdict(lambda: {"answers": [], "ground_truths": [], "faithfulness": [], "contexts": []})
     for i, qtype in enumerate(question_types):
         groups[qtype]["answers"].append(answers[i])
         groups[qtype]["ground_truths"].append(ground_truths[i])
         if faithfulness_scores and i < len(faithfulness_scores):
             groups[qtype]["faithfulness"].append(faithfulness_scores[i])
+        if contexts_list and i < len(contexts_list):
+            groups[qtype]["contexts"].append(contexts_list[i])
 
     return {
         qtype: compute_response_metrics(
             g["answers"], g["ground_truths"],
             faithfulness_scores=g["faithfulness"] or None, llm=llm,
+            contexts_list=g["contexts"] or None,
         )
         for qtype, g in groups.items()
     }

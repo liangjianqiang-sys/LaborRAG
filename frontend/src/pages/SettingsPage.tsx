@@ -3,7 +3,6 @@ import { Settings as SettingsIcon, Save, SlidersHorizontal, AlertTriangle, Gauge
 
 export default function SettingsPage() {
   const [retrieverType, setRetrieverType] = useState('reranked')
-  const [ragMode, setRagMode] = useState('simple')
   const [chunkStrategy, setChunkStrategy] = useState('law_article')
   const [topK, setTopK] = useState('8')
   const [vectorWeight, setVectorWeight] = useState('0.5')
@@ -45,9 +44,9 @@ export default function SettingsPage() {
             </label>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               {[
-                { value: 'vector', label: 'V1 纯向量', desc: '语义相似度匹配', icon: Layers },
-                { value: 'hybrid', label: 'V2 混合检索', desc: '向量 + BM25 + RRF 融合', icon: ArrowLeftRight },
-                { value: 'reranked', label: 'V2 重排序', desc: '混合检索 + Cross-Encoder 重排', icon: Gauge },
+                { value: 'vector', label: '纯向量检索', desc: '语义相似度匹配', icon: Layers },
+                { value: 'hybrid', label: '混合检索', desc: '向量 + BM25 + RRF 融合', icon: ArrowLeftRight },
+                { value: 'reranked', label: '重排序检索', desc: '混合检索 + Cross-Encoder 重排', icon: Gauge },
               ].map((opt) => (
                 <label
                   key={opt.value}
@@ -128,54 +127,6 @@ export default function SettingsPage() {
                   </div>
                   {chunkStrategy === opt.value && (
                     <div className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-accent-500" />
-                  )}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          {/* RAG 模式 */}
-          <div>
-            <label className="flex items-center gap-1.5 text-xs font-medium text-slate-500 mb-2.5 uppercase tracking-wider">
-              <ArrowLeftRight size={14} className="text-cyan-500" />
-              RAG 模式
-            </label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              {[
-                { value: 'simple', label: 'V1/V2 简单链路', desc: '检索 → 生成（快速，无纠错机制）', icon: Layers },
-                { value: 'crag', label: 'V3 CRAG 纠错', desc: '检索评估 → 改写 → 生成 → 回答评估 → 纠错', icon: ArrowLeftRight },
-              ].map((opt) => (
-                <label
-                  key={opt.value}
-                  className={`relative flex items-start gap-3 rounded-xl border-2 p-4 cursor-pointer transition-all duration-200 ${
-                    ragMode === opt.value
-                      ? 'border-cyan-500 bg-cyan-50/60 shadow-sm shadow-cyan-200/30'
-                      : 'border-slate-100 bg-white hover:border-cyan-200 hover:bg-cyan-50/30'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="ragmode"
-                    value={opt.value}
-                    checked={ragMode === opt.value}
-                    onChange={(e) => setRagMode(e.target.value)}
-                    className="sr-only"
-                  />
-                  <div className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${
-                    ragMode === opt.value ? 'bg-cyan-100 text-cyan-600' : 'bg-slate-100 text-slate-400'
-                  } transition-colors duration-200`}>
-                    <opt.icon size={16} />
-                  </div>
-                  <div>
-                    <span className={`text-sm font-semibold ${
-                      ragMode === opt.value ? 'text-cyan-700' : 'text-slate-700'
-                    }`}>
-                      {opt.label}
-                    </span>
-                    <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">{opt.desc}</p>
-                  </div>
-                  {ragMode === opt.value && (
-                    <div className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-cyan-500" />
                   )}
                 </label>
               ))}

@@ -38,7 +38,6 @@ const TAG_ICON_COLOR: Record<string, string> = {
 
 const RAG_MODE_COLORS: Record<string, string> = {
   simple: 'bg-brand-50 text-brand-700 border-brand-200',
-  crag: 'bg-accent-50 text-accent-600 border-accent-200',
   agent: 'bg-cyan-50 text-cyan-600 border-cyan-100',
   vector: 'bg-violet-50 text-violet-600 border-violet-200',
   hybrid: 'bg-amber-50 text-amber-600 border-amber-200',
@@ -46,12 +45,11 @@ const RAG_MODE_COLORS: Record<string, string> = {
 }
 
 const RAG_MODE_LABELS: Record<string, string> = {
-  simple: 'V1/V2',
-  crag: 'V3 CRAG',
-  agent: 'V4 Agent',
-  vector: 'V1 向量',
-  hybrid: 'V2 混合',
-  reranked: 'V2 重排序',
+  simple: '简单链路',
+  agent: 'Agentic RAG',
+  vector: '向量检索',
+  hybrid: '混合检索',
+  reranked: '重排序',
 }
 
 interface ChatWindowProps {
@@ -95,9 +93,8 @@ export default function ChatWindow({ conversation, onAddMessage, onSetBackendCon
         role: 'assistant',
         content: res.answer,
         sources: res.sources,
-        cragSteps: res.crag_steps,
+        ragSteps: res.rag_steps,
         rewrittenQuestion: res.rewritten_question,
-        ragMode: res.rag_mode,
         confidence: res.confidence,
         disclaimer: res.disclaimer,
       }
@@ -156,14 +153,14 @@ export default function ChatWindow({ conversation, onAddMessage, onSetBackendCon
                 {msg.role === 'assistant' && (
                   <div className="ml-12 lg:ml-14 mt-1.5 space-y-1">
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      {msg.ragMode && RAG_MODE_LABELS[msg.ragMode] && (
+                      {msg.ragSteps && msg.ragSteps.length > 0 && (
                         <span
                           className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border ${
-                            RAG_MODE_COLORS[msg.ragMode] || 'bg-gray-100 text-gray-600 border-gray-200'
+                            RAG_MODE_COLORS['agent']
                           }`}
                         >
                           <Zap size={10} />
-                          {RAG_MODE_LABELS[msg.ragMode]}
+                          {RAG_MODE_LABELS['agent']}
                         </span>
                       )}
                       {msg.confidence != null && msg.confidence > 0 && (
@@ -177,8 +174,8 @@ export default function ChatWindow({ conversation, onAddMessage, onSetBackendCon
                         </span>
                       )}
                     </div>
-                    {msg.cragSteps && msg.cragSteps.length > 0 && (
-                      <CragStepsPanel steps={msg.cragSteps} rewrittenQuestion={msg.rewrittenQuestion} />
+                    {msg.ragSteps && msg.ragSteps.length > 0 && (
+                      <RagStepsPanel steps={msg.ragSteps} rewrittenQuestion={msg.rewrittenQuestion} />
                     )}
                     {/* 免责声明 + 低置信度警告 */}
                     {msg.disclaimer && (
@@ -299,15 +296,15 @@ function WelcomeScreen({ onSend }: { onSend: (text: string) => void }) {
         </span>
         <span className="flex items-center gap-1">
           <span className="w-1.5 h-1.5 rounded-full bg-cyan-500" />
-          CRAG 纠错
+          Agent 步骤
         </span>
       </div>
     </div>
   )
 }
 
-/* ── CRAG 步骤面板 ── */
-function CragStepsPanel({ steps, rewrittenQuestion }: { steps: string[]; rewrittenQuestion?: string }) {
+/* ── RAG 步骤面板 ── */
+function RagStepsPanel({ steps, rewrittenQuestion }: { steps: string[]; rewrittenQuestion?: string }) {
   const [expanded, setExpanded] = useState(false)
 
   const stepMeta = (step: string) => {

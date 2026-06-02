@@ -116,9 +116,7 @@
 | Reranker | BGE-Reranker-v2-m3 | Cross-Encoder重排序模型 |
 | 向量库 | FAISS | 向量存储与检索 |
 | 关键词检索 | BM25 + jieba | 中文分词关键词匹配 |
-| RAG框架 | LangChain 1.0 + LCEL | V1/V2 检索生成链式编排 |
-| CRAG框架 | LangGraph | V3 状态图自我纠错工作流 |
-| Agent框架 | LangGraph | V4 多Agent协作工作流 |
+| Agent框架 | LangGraph | Agentic RAG 多Agent协作工作流 |
 | 评估 | RAGAS + 自研指标 | 三元组评估体系（检索/响应/RAGAS） |
 | 对话持久化 | JSON文件 (D:/LaborRAG_data/conversations/) | 后端对话历史持久化 |
 | 后端 | FastAPI + Uvicorn | API服务 |
@@ -149,9 +147,7 @@ LaborRAG/
 │   │   │   │   ├── base.py      # 抽象基类
 │   │   │   │   ├── prompts.py    # 共享回答风格规则（7条人性化规则）
 │   │   │   │   ├── guardrails.py # 输出护栏（14条法律风险提示规则，评估模式自动跳过）
-│   │   │   │   ├── simple_chain.py # V1/V2 LCEL链
-│   │   │   │   ├── crag_graph.py  # V3 Adaptive RAG状态图
-│   │   │   │   └── agent_graph.py  # V4 Agentic RAG多Agent
+│   │   │   │   └── agent_graph.py  # Agentic RAG多Agent工作流
 │   │   │   └── rag_engine.py    # RAG引擎（自动选择检索策略+多轮对话上下文）
 │   │   ├── evaluation/          # 三元组评估体系
 │   │   │   ├── utils.py          # 公共工具(sanitize_floats/strip_per_query/parallel_map/file_lock)
@@ -347,7 +343,7 @@ CONVERSATION_DATA_PATH=D:/LaborRAG_data/conversations  # 对话历史持久化�
 ✅ 对话历史双层持久化（前端localStorage + 后端JSON文件）
 ✅ 前端传历史兜底（后端重启后仍能保持多轮上下文）
 ✅ Faithfulness优化（contexts截断修复+护栏跳过+验证警告移除+grader关闭）
-⬜ V1-V4四版对比实验
+✅ 混合检索优化（概念注入+法律词典+权重调整+评估器修复）
 
 ## 注意事项
 
@@ -358,7 +354,7 @@ CONVERSATION_DATA_PATH=D:/LaborRAG_data/conversations  # 对话历史持久化�
 - 国内环境建议设置 `HF_ENDPOINT=https://hf-mirror.com` 加速模型下载
 - CRAG 模式每次提问约消耗 3000-4000 tokens（含3-4次LLM调用），简单模式约 2500 tokens
 - Agent 模式根据意图不同消耗不同：retrieve≈3000, calculate≈4000, compare≈5000 tokens
-- 评估对比实验将在V4完成后统一运行（V1 vs V2 vs V3 vs V4 四版对比）
+- 评估命令：`python run_eval.py`（6题快速验证）或 `python run_eval.py --sample 36`（全量评估）
 - 评估并发度建议设为2-4，过高可能触发API限流（`EVAL_MAX_CONCURRENT`）
 - 后端重启后未完成任务自动标记为「已暂停」，需手动点击「继续」恢复
 - 本系统回答仅供参考，不构成法律意见，具体问题请咨询专业律师
