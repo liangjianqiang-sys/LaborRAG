@@ -36,6 +36,25 @@ frontend/.vite/
 # 运行时数据（跨平台，替代原来的 D:/LaborRAG_data/）
 runtime_data/
 
+# IDE
+.vs/
+
+# 毕设论文图片与导出（不上传）
+cover_images/
+figures/
+outputs/
+
+# Claude Code 技能与工作树
+skills/
+worktrees/
+.claude/worktrees/
+
+# 向量库与运行时数据
+vector_store/
+labor_laws/
+conversations/
+evaluation_reports/
+
 # OS
 .DS_Store
 Thumbs.db
