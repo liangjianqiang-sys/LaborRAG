@@ -160,6 +160,7 @@ class RAGEngine:
             conversation_context = "\n".join(lines)
 
         # Agentic RAG工作流
+        result = {}  # 异常降级到 simple 时不走 result 赋值，兜底空 dict 避免 UnboundLocalError
         try:
             # 评估时临时切换为Reranker检索器
             if use_reranker:

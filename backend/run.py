@@ -1,4 +1,10 @@
-"""LaborRAG 启动入口 - 直接运行此文件即可启动后端服务"""
+"""LaborRAG 后端启动入口
+
+启动方式（复制到独立 PowerShell 终端执行）：
+    D:\Anaconda\envs\RAG\python.exe d:\毕业设计\LaborRAG\backend\run.py
+
+环境：Conda RAG 环境（已装全部依赖）
+"""
 import sys
 import os
 
@@ -11,9 +17,9 @@ os.chdir(BACKEND_DIR)
 
 
 if __name__ == "__main__":
-    # 统一日志配置（uvicorn --reload 子进程会在 lifespan 再 setup 一次）
+    # 统一日志配置
     from app.core.logging_config import setup_logging
     setup_logging()
 
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True, reload_dirs=[BACKEND_DIR])
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=False)
