@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+# pythonpath 让测试能 import 业务代码（from app.xxx import ...）
+# backend/ 是 app 包的根，pytest 从 backend/ 运行时把当前目录加入 sys.path
+pythonpath = ["."]
+testpaths = ["tests"]
+# 中文输出更友好，保留 print 用于调试
+console_output_style = "progress"

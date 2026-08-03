@@ -47,11 +47,8 @@ async def chat(request: ChatRequest):
             status_code=503,
             detail="知识库未就绪，请先构建知识库。",
         )
-    try:
-        return await engine.chat(request)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+    # 异常冒泡到 main.py 全局 handler，统一 500 格式 + request_id
+    return await engine.chat(request)
 
 
 @router.get("/knowledge-base/status", response_model=KnowledgeBaseStatus)
@@ -98,8 +95,7 @@ def build_knowledge_base(request: BuildRequest = None):
         return {"message": "知识库构建成功", "rebuild": rebuild}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # 其余异常冒泡到 main.py 全局 handler
 
 
 @router.post("/documents/upload", response_model=UploadResponse)
@@ -121,17 +117,14 @@ async def upload_document(file: UploadFile = File(...)):
         content = await file.read()
         f.write(content)
 
-    # 添加到向量库
-    try:
-        chunk_count = engine.add_document(filepath)
-        return UploadResponse(
-            success=True,
-            filename=file.filename,
-            chunk_count=chunk_count,
-            message=f"文档上传成功，切分为 {chunk_count} 个片段。",
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # 添加到向量库（异常冒泡到 main.py 全局 handler）
+    chunk_count = engine.add_document(filepath)
+    return UploadResponse(
+        success=True,
+        filename=file.filename,
+        chunk_count=chunk_count,
+        message=f"文档上传成功，切分为 {chunk_count} 个片段。",
+    )
 
 
 @router.get("/documents/list")

@@ -38,7 +38,7 @@ _BACKEND_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "
 def _get_eval_data_dir() -> str:
     """获取评估数据存储根目录，优先使用环境变量，回退到backend目录下。"""
     from app.config import settings
-    return os.getenv("EVAL_DATA_DIR", os.path.join(str(settings._RUNTIME_DATA_DIR), "evaluation"))
+    return os.getenv("EVAL_DATA_DIR", os.path.join(str(settings.RUNTIME_DATA_DIR), "evaluation"))
 
 
 _PERSISTENT_ROOT = os.path.join(_get_eval_data_dir(), "persistent")

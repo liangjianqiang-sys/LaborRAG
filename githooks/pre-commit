@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# pre-commit 安全钩子：阻止把含密钥的文件/内容提交进仓库
+# 启用方式（项目根目录执行一次）：
+#   git config core.hooksPath githooks
+# 作用：
+#   1. 拦截 .env / .env.local 等含密钥的文件被暂存（.env.example 不拦）
+#   2. 扫描暂存内容，拦截 sk- 开头的疑似 API Key 串
+# 为什么需要它：.gitignore 只按文件名挡 .env；若密钥被粘贴进
+#   config.py / notebook / 重命名文件，.gitignore 挡不住，这里兜底。
+
+set -u
+
+# 1. 拦截 .env 类文件（保留 .env.example 作为模板可提交）
+staged=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null)
+if echo "$staged" | grep -E '(^|/)\.env$|(^|/)\.env\.local$|(^|/)\.env\.[a-z]+\.local$'; then
+  echo "❌ [pre-commit] 检测到 .env 文件被加入暂存，已阻止提交（含 API Key）。"
+  echo "   如确需提交示例配置，请改用 .env.example。"
+  echo "   如确属误报，可用 git commit --no-verify 绕过（不推荐）。"
+  exit 1
+fi
+
+# 2. 扫描暂存 diff，拦截疑似密钥（sk- 后跟 20 位以上字母数字）
+if git diff --cached -U0 2>/dev/null | grep -aE 'sk-[A-Za-z0-9]{20,}'; then
+  echo "❌ [pre-commit] 暂存内容疑似含 API Key（sk-...），已阻止提交。"
+  echo "   请把密钥移到 .env，代码里只读环境变量。"
+  exit 1
+fi
+
+exit 0

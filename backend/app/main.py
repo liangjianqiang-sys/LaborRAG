@@ -1,10 +1,16 @@
 from contextlib import asynccontextmanager
 from datetime import datetime
-from fastapi import FastAPI
+import uuid
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from app.config import settings
+from app.core.logging_config import setup_logging, get_logger
 from app.core.rag_engine import RAGEngine
 from app.api.routes import router, set_engine
+
+logger = get_logger(__name__)
 
 # 全局RAG引擎
 rag_engine = RAGEngine()
@@ -12,7 +18,7 @@ rag_engine = RAGEngine()
 
 def _preload_eval_models():
     """预加载评估相关模型，避免首次评估时等待下载。"""
-    print("⏳ 预加载评估模型...")
+    logger.info("预加载评估模型...")
     try:
         from langchain_openai import ChatOpenAI
         from app.core.embeddings import get_embeddings
@@ -41,29 +47,31 @@ def _preload_eval_models():
         # 3. 预导入 ragas metrics（触发 ragas 内部 metric 注册）
         from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall  # noqa: F401
 
-        print("✅ 评估模型预加载完成")
+        logger.info("评估模型预加载完成")
     except Exception as e:
-        print(f"⚠️ 评估模型预加载失败（不影响主流程）: {e}")
+        logger.warning(f"评估模型预加载失败（不影响主流程）: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期：启动时初始化RAG引擎，关闭时清理资源。"""
-    # 过滤高频轮询日志（reload子进程中也生效）
-    import logging
-    from run import _PollingFilter
-    logging.getLogger("uvicorn.access").addFilter(_PollingFilter())
+    # 统一日志配置（reload 子进程在此 setup；setup_logging 幂等）
+    setup_logging()
 
-    print(f"🚀 {settings.PROJECT_NAME} v{settings.VERSION} starting...")
-    print(f"   LLM: {settings.LLM_MODEL_NAME}")
-    print(f"   Embedding: {settings.EMBEDDING_MODEL_NAME}")
-    print(f"   Data dir: {settings.DATA_DIR}")
+    logger.info(f"🚀 {settings.PROJECT_NAME} v{settings.VERSION} starting...")
+    logger.info(f"   LLM: {settings.LLM_MODEL_NAME}")
+    logger.info(f"   Embedding: {settings.EMBEDDING_MODEL_NAME}")
+    logger.info(f"   Data dir: {settings.DATA_DIR}")
+
+    # 密钥安全告警：缺 key / 占位符 / 弱口令启动即提示，避免带空 key 跑生产
+    for w in settings.warn_on_insecure_secrets():
+        logger.warning(f"[密钥安全] {w}")
 
     # 初始化RAG引擎（加载已有向量库或构建新的）
     rag_engine.initialize()
     set_engine(rag_engine)
 
-    print("✅ RAG引擎初始化完成")
+    logger.info("RAG引擎初始化完成")
 
     # 将上次未完成的评估任务标记为paused（不自动恢复，需手动续评）
     from app.evaluation.eval_persistent import load_all_tasks, save_task, file_lock
@@ -74,15 +82,15 @@ async def lifespan(app: FastAPI):
                 task["error"] = "服务重启，任务已暂停"
                 task["updated_at"] = datetime.now().isoformat()
                 save_task(task)
-                print(f"  ⏸ 任务 {task['task_id']} 标记为paused（服务重启）")
+                logger.info(f"  ⏸ 任务 {task['task_id']} 标记为paused（服务重启）")
 
     # 预加载评估模型（同步阻塞，启动后不等待）
     _preload_eval_models()
 
-    print("✅ 所有模型预加载完成")
+    logger.info("所有模型预加载完成")
     yield
 
-    print("👋 Shutting down...")
+    logger.info("👋 Shutting down...")
 
 
 app = FastAPI(
@@ -90,6 +98,37 @@ app = FastAPI(
     version=settings.VERSION,
     lifespan=lifespan,
 )
+
+
+# ── request_id 中间件：每请求注入 uuid，响应头回传，便于线上串联排障 ──
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+# ── 全局异常处理：统一错误格式 + 完整堆栈记日志（替代 routes 里散落的 catch-all-500）──
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    request_id = getattr(request.state, "request_id", "unknown")
+    logger.exception(f"[{request_id}] 未处理异常 {request.method} {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "内部服务器错误", "request_id": request_id},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    request_id = getattr(request.state, "request_id", "unknown")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "请求参数校验失败", "request_id": request_id, "errors": exc.errors()},
+    )
+
 
 # CORS中间件
 app.add_middleware(

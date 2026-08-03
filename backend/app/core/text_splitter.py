@@ -15,8 +15,8 @@ class LawArticleSplitter:
     - parent_id 格式：{doc_id}_{article_number}，确保跨文档唯一
     """
 
-    # 匹配 "第X条" 的正则
-    ARTICLE_PATTERN = re.compile(r"^第[一二三四五六七八九十百千\d]+条\s")
+    # 匹配 "第X条" 的正则（含「零」，覆盖「第一百零一条」等中文数字）
+    ARTICLE_PATTERN = re.compile(r"^第[一二三四五六七八九十百零千\d]+条\s")
     # 匹配法条内的款项标记，如 （一）、（二）、1.、2. 等
     CLAUSE_PATTERN = re.compile(r"^[（(][一二三四五六七八九十\d]+[）)]|^\d+[.、]")
 

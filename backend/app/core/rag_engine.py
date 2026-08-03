@@ -3,6 +3,7 @@ import uuid
 import threading
 
 from app.config import settings
+from app.core.logging_config import get_logger
 from app.core.vectorstore import VectorStoreManager
 from app.core.document_loader import DocumentLoader
 from app.core.retriever.base import BaseRetriever
@@ -14,6 +15,8 @@ from app.models.schemas import ChatRequest, ChatResponse, SourceDocument, Messag
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from app.core.generator.prompts import ANSWER_STYLE_RULES
+
+logger = get_logger(__name__)
 
 
 class RAGEngine:
@@ -38,7 +41,7 @@ class RAGEngine:
         self.agent_graph = AgenticRAGGraph(self.retriever)
         # 降级兜底LLM（懒加载）
         self._fallback_llm = None
-        print(f"   Generator: Agentic RAG")
+        logger.info(f"   Generator: Agentic RAG")
         # 启动时预加载Reranker，避免首次聊天卡顿
         _ = self.eval_retriever
 
@@ -54,7 +57,7 @@ class RAGEngine:
                 bm25_weight=settings.BM25_WEIGHT,
                 rrf_k=settings.RRF_K,
             )
-            print(f"   Retriever: Hybrid (vector={settings.VECTOR_WEIGHT}, bm25={settings.BM25_WEIGHT})")
+            logger.info(f"   Retriever: Hybrid (vector={settings.VECTOR_WEIGHT}, bm25={settings.BM25_WEIGHT})")
             return hybrid
         elif settings.RETRIEVER_TYPE == "reranked":
             from app.core.retriever.reranked import RerankedRetriever
@@ -66,33 +69,33 @@ class RAGEngine:
                 rrf_k=settings.RRF_K,
             )
             reranked = RerankedRetriever(hybrid_retriever=hybrid)
-            print(f"   Retriever: Reranked (model={settings.RERANKER_MODEL_NAME})")
+            logger.info(f"   Retriever: Reranked (model={settings.RERANKER_MODEL_NAME})")
             return reranked
         else:
-            print("   Retriever: Vector (V1)")
+            logger.info("   Retriever: Vector (V1)")
             return vector_retriever
 
     def _preload_reranker(self):
         """预加载Reranker模型，避免首次提问时卡顿。"""
         if settings.RETRIEVER_TYPE == "reranked" and hasattr(self.retriever, '_get_reranker'):
-            print("   Preloading reranker model...")
+            logger.info("   Preloading reranker model...")
             self.retriever._get_reranker()
-            print("   Reranker model preloaded.")
+            logger.info("   Reranker model preloaded.")
 
     def initialize(self) -> bool:
         """初始化：尝试加载已有向量库，否则构建新的。"""
         # 父子分块模式提示
         if settings.PARENT_CHILD_ENABLED:
-            print("   Parent-Child Chunking: ENABLED (子块精准检索→父块完整上下文)")
+            logger.info("   Parent-Child Chunking: ENABLED (子块精准检索→父块完整上下文)")
         else:
-            print("   Parent-Child Chunking: DISABLED (传统切分模式)")
+            logger.info("   Parent-Child Chunking: DISABLED (传统切分模式)")
 
         if self.vector_store_manager.load():
-            print("Loaded existing vector store.")
+            logger.info("Loaded existing vector store.")
             # 加载BM25索引（如果存在）
             if settings.RETRIEVER_TYPE in ("hybrid", "reranked"):
                 if self.bm25_retriever.load_index():
-                    print("Loaded existing BM25 index.")
+                    logger.info("Loaded existing BM25 index.")
         else:
             return self.build_knowledge_base()
 
@@ -116,7 +119,7 @@ class RAGEngine:
         documents = list(docstore._dict.values())
         if documents:
             chunk_count = self.bm25_retriever.build_index(documents)
-            print(f"BM25 index built with {chunk_count} documents.")
+            logger.info(f"BM25 index built with {chunk_count} documents.")
 
     def build_knowledge_base(self, rebuild: bool = False) -> bool:
         """构建知识库。"""
@@ -125,11 +128,11 @@ class RAGEngine:
 
         documents = self.document_loader.load_documents()
         if not documents:
-            print("No documents found in data directory.")
+            logger.info("No documents found in data directory.")
             return False
 
         chunk_count = self.vector_store_manager.build_from_documents(documents)
-        print(f"Knowledge base built with {chunk_count} chunks from {len(documents)} document sections.")
+        logger.info(f"Knowledge base built with {chunk_count} chunks from {len(documents)} document sections.")
 
         # 同时构建BM25索引
         if settings.RETRIEVER_TYPE in ("hybrid", "reranked"):
@@ -260,7 +263,7 @@ class RAGEngine:
                         rrf_k=settings.RRF_K,
                     )
                     self._eval_retriever = RerankedRetriever(hybrid_retriever=hybrid)
-                    print("   [Reranker] 评估模式已加载")
+                    logger.info("   [Reranker] 评估模式已加载")
         return self._eval_retriever
 
     @staticmethod

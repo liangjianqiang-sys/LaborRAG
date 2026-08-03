@@ -196,9 +196,9 @@ def compute_retrieval_metrics(
     """
     n = len(sources_list)
     if n == 0:
+        # 契约对齐：空输入也返回 precision@1（与非空路径一致），避免下游 KeyError
         return {
-            f"precision@{k}": 0.0, f"recall@{k}": 0.0, f"f1@{k}": 0.0,
-            "mrr": 0.0, "map": 0.0, "per_query": [],
+            "precision@1": 0.0, f"recall@{k}": 0.0, "per_query": [],
         }
 
     per_query = []
