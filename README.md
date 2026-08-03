@@ -7,10 +7,17 @@
 
 ## 📸 系统截图
 
-| 问答页 | 评估结果 | 知识库管理 |
-|:---:|:---:|:---:|
-| ![问答](docs/screenshots/chat.png) | ![评估](docs/screenshots/eval.png) | ![知识库](docs/screenshots/kb.png) |
-| *智能问答 + 来源追溯 + Agent 工作流可视化* | *20 题三元组评估指标汇总* | *17 部法律文档 + 1243 chunks* |
+### 💬 智能问答
+![问答](docs/screenshots/chat.png)
+*Agentic RAG 工作流：Router 意图分类 → 检索增强 → 生成回答 → Validator 验证，来源追溯 + CRAG 步骤可视化*
+
+### 📊 三元组评估
+![评估](docs/screenshots/eval.png)
+*20 题 Golden Set 评估：RAGAS 指标（忠实度 92%）+ 检索指标（P@1=90%, R@5=92.5%）+ 响应指标*
+
+### 📚 知识库管理
+![知识库](docs/screenshots/kb.png)
+*17 部劳动法文档、1243 个法条 chunk，支持上传、构建、法条结构化切分*
 
 ---
 
