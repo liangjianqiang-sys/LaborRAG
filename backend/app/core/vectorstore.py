@@ -4,7 +4,6 @@ import re
 from typing import List, Tuple, Optional
 from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.config import settings
 from app.core.embeddings import get_embeddings
 from app.core.text_splitter import LawArticleSplitter
@@ -124,6 +123,9 @@ class VectorStoreManager:
     """
 
     def __init__(self):
+        # 惰性导入：langchain_text_splitters 顶层导入约 40s，只有实例化时才需要
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+
         self.embeddings = get_embeddings()
         self.vector_store = None
         self.text_splitter = RecursiveCharacterTextSplitter(

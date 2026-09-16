@@ -6,7 +6,6 @@ from langchain_community.document_loaders import (
     TextLoader,
     UnstructuredMarkdownLoader,
 )
-import pymupdf4llm
 
 
 class DocumentLoader:
@@ -60,6 +59,10 @@ class DocumentLoader:
 
         if ext == ".pdf":
             # PyMuPDF4LLM: PDF → Markdown，结构更完整
+            # 惰性导入：pymupdf4llm 顶层导入约 50s，而只有 PDF 分支需要它，
+            # 放在模块级会让所有 import app.core.document_loader 的代码都付出这个代价
+            import pymupdf4llm
+
             md_text = pymupdf4llm.to_markdown(filepath)
             docs = [Document(page_content=md_text, metadata={"source": filename})]
         elif ext == ".txt":

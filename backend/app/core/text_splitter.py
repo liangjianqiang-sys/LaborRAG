@@ -2,8 +2,24 @@ import os
 import re
 from typing import List
 from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.config import settings
+
+
+def _new_recursive_splitter():
+    """构造固定长度切分器。
+
+    惰性导入：langchain_text_splitters 顶层导入约 40s，而只有 recursive 切分
+    路径需要它。放在模块级会让所有 import app.core.text_splitter 的代码
+    （包括只测纯函数逻辑的单测）都付出这个代价。
+    """
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+    return RecursiveCharacterTextSplitter(
+        chunk_size=settings.CHUNK_SIZE,
+        chunk_overlap=settings.CHUNK_OVERLAP,
+        separators=["\n\n", "\n", "。", "；", "，", " ", ""],
+        length_function=len,
+    )
 
 
 class LawArticleSplitter:
@@ -194,12 +210,7 @@ class LawArticleSplitter:
             return self._fallback_split(text, source)
 
         chunks = []
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=settings.CHUNK_SIZE,
-            chunk_overlap=settings.CHUNK_OVERLAP,
-            separators=["\n\n", "\n", "。", "；", "，", " ", ""],
-            length_function=len,
-        )
+        splitter = _new_recursive_splitter()
 
         for article_text in articles:
             article_num = ""
@@ -229,11 +240,6 @@ class LawArticleSplitter:
 
     def _fallback_split(self, text: str, source: str) -> List[Document]:
         """回退到固定长度切分。"""
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=settings.CHUNK_SIZE,
-            chunk_overlap=settings.CHUNK_OVERLAP,
-            separators=["\n\n", "\n", "。", "；", "，", " ", ""],
-            length_function=len,
-        )
+        splitter = _new_recursive_splitter()
         docs = splitter.create_documents([text], metadatas=[{"source": source}])
         return docs
