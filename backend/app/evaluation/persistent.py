@@ -85,10 +85,31 @@ def save_task(task: Dict[str, Any]):
 
 
 def _append_result(task_id: str, record: Dict[str, Any]):
-    """追加一条结果到jsonl文件（线程安全）。"""
+    """追加一条结果到jsonl文件（线程安全）。
+
+    ⚠️ 追加前必须确保**上一行已换行结束**（2026-09-20 修复）。
+    进程被 kill 时最后一行可能只写了一半（没有换行符），此时直接 append 会把
+    新记录接到那半行后面 —— 两条一起变成非法 JSON，于是**新记录静默丢失**：
+    `_load_results` 只会跳过损坏行，无从知道丢了什么。
+
+    实测：文件内容为 `{"index":0}\\n{"index":1, "broken": ` 时追加 index=2，
+    读回只剩 index=0（index=2 被并进损坏行）。
+
+    这个缺陷只在「崩溃后继续追加」这一条路径上出现 —— 而「崩溃后能续评」
+    正是本模块存在的理由，所以必须补上。
+    """
     with file_lock:
         _ensure_dirs()
-        with open(_results_path(task_id), "a", encoding="utf-8") as f:
+        path = _results_path(task_id)
+        # 检查文件末尾是否有换行（空文件 / 不存在则无需补）
+        need_newline = False
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            with open(path, "rb") as f:
+                f.seek(-1, os.SEEK_END)
+                need_newline = f.read(1) != b"\n"
+        with open(path, "a", encoding="utf-8") as f:
+            if need_newline:
+                f.write("\n")
             f.write(json.dumps(sanitize_floats(record), ensure_ascii=False) + "\n")
 
 
