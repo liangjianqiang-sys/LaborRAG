@@ -1,8 +1,8 @@
 """Calculate — 计算节点。"""
 import re
+from typing import TYPE_CHECKING
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 
 from app.agent.state import AgentState
 from app.agent.prompts import ANSWER_STYLE_RULES, CALCULATOR_PROMPT
@@ -10,8 +10,14 @@ from app.utils.text import format_docs
 from app.tools.labor_calculator import auto_calculate
 from app.retrieval.base import BaseRetriever
 
+if TYPE_CHECKING:
+    # langchain_openai 顶层导入实测约 17s（连带 transformers + torch，见
+    # rag_engine.py 的同类注释），而这里只在函数签名里用作注解 ——
+    # 走 TYPE_CHECKING + 字符串注解，让 import app.agent.nodes.* 保持廉价。
+    from langchain_openai import ChatOpenAI
 
-async def calculate(retriever: BaseRetriever, gen_llm: ChatOpenAI, state: AgentState) -> dict:
+
+async def calculate(retriever: BaseRetriever, gen_llm: "ChatOpenAI", state: AgentState) -> dict:
     """Calculator Agent：检索法条 + 精确计算。"""
     print(f"[Agent] 🧮 计算Agent执行...")
     question = state.get("rewritten_question") or state["question"]

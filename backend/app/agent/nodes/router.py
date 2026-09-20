@@ -1,14 +1,19 @@
 """Router — 意图路由节点 + 意图分发。"""
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 
 from app.agent.state import AgentState
 from app.agent.prompts import INTENT_ROUTER_PROMPT
 
+if TYPE_CHECKING:
+    # langchain_openai 顶层导入实测约 17s（连带 transformers + torch，见
+    # rag_engine.py 的同类注释），而这里只在函数签名里用作注解 ——
+    # 走 TYPE_CHECKING + 字符串注解，让 import app.agent.nodes.* 保持廉价。
+    from langchain_openai import ChatOpenAI
 
-async def route_intent(grader_llm: ChatOpenAI, state: AgentState) -> dict:
+
+async def route_intent(grader_llm: "ChatOpenAI", state: AgentState) -> dict:
     """Router Agent：意图识别，决定分派给哪个专业Agent。"""
     print(f"[Agent] 🧭 路由意图识别...")
     question = state.get("rewritten_question") or state["question"]

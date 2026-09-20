@@ -1,14 +1,20 @@
 """Rewrite — 上下文感知查询改写节点（法言法语翻译 + 多查询拆解，一次JSON输出）。"""
 import json
+from typing import TYPE_CHECKING
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 
 from app.agent.state import AgentState
 from app.agent.prompts import CONTEXT_QUERY_REWRITE_PROMPT
 
+if TYPE_CHECKING:
+    # langchain_openai 顶层导入实测约 17s（连带 transformers + torch，见
+    # rag_engine.py 的同类注释），而这里只在函数签名里用作注解 ——
+    # 走 TYPE_CHECKING + 字符串注解，让 import app.agent.nodes.* 保持廉价。
+    from langchain_openai import ChatOpenAI
 
-async def rewrite_query(grader_llm: ChatOpenAI, state: AgentState) -> dict:
+
+async def rewrite_query(grader_llm: "ChatOpenAI", state: AgentState) -> dict:
     """查询改写：法言法语翻译 + 多查询拆解，一次LLM调用输出JSON。
 
     输出写入 state：

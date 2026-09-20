@@ -9,7 +9,7 @@ import json
 import os
 import time
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import TYPE_CHECKING, Dict, Any, List
 from datasets import Dataset
 from ragas import evaluate, RunConfig
 from ragas.metrics import (
@@ -17,7 +17,6 @@ from ragas.metrics import (
     context_precision,
     context_recall,
 )
-from langchain_openai import ChatOpenAI
 from langchain_core.language_models import BaseChatModel
 from langchain_core.outputs import ChatResult
 from langchain_core.messages import BaseMessage
@@ -55,6 +54,14 @@ def _mean_scores(df, skip_extra=frozenset()) -> Dict[str, float]:
     return scores
 
 
+if TYPE_CHECKING:
+    # 仅在 _N1ChatModel 的字段注解里出现。langchain_openai 顶层导入实测约 17s
+    # （连带 transformers + torch），而本模块被 routes 延迟导入、只在触发评估时
+    # 才加载 —— 不该让「打开评估页」也付这个代价。
+    # 另注：pydantic v2 不会在类创建时求值字符串注解（已实测），故此处安全。
+    from langchain_openai import ChatOpenAI
+
+
 class _N1ChatModel(BaseChatModel):
     """包装ChatOpenAI，强制n=1以兼容不支持n>1的API（如Qwen/DeepSeek）。
 
@@ -62,7 +69,7 @@ class _N1ChatModel(BaseChatModel):
     此wrapper拦截generate调用，将n强制设为1，避免BadRequestError。
     """
 
-    base: ChatOpenAI
+    base: "ChatOpenAI"
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -107,6 +114,8 @@ class EvalRunner:
         # 另外三处调用点（agent/graph.py ×2、main.py、services/rag_engine.py）
         # 本来就是无条件传的，此处保持一致。
         # 回归守卫见 tests/test_llm_call_sites.py。
+        from langchain_openai import ChatOpenAI  # 见文件顶部 TYPE_CHECKING 处的说明
+
         base_llm = ChatOpenAI(
             model=settings.RAGAS_MODEL_NAME,
             openai_api_key=settings.RAGAS_API_KEY,

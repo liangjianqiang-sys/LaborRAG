@@ -3,7 +3,6 @@
 职责：实例化重型组件 → 注入给节点 → 组装图 → 运行。
 不包含任何业务逻辑，所有节点逻辑在 nodes/ 中实现。
 """
-from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 
 from app.core.config import settings
@@ -30,6 +29,12 @@ class AgenticRAGGraph:
 
     def __init__(self, retriever: BaseRetriever):
         self.retriever = retriever
+
+        # langchain_openai 必须在函数内导入：顶层导入实测约 17s
+        # （langchain_openai.chat_models.azure → transformers → torch），
+        # 放在模块级会让每个 `import app.agent.graph` 都付这笔钱 ——
+        # 包括 smoke_import、AST 扫描、以及只读节点函数的测试。
+        from langchain_openai import ChatOpenAI
 
         # 分类/验证用LLM（轻量模型）
         self.grader_llm = ChatOpenAI(

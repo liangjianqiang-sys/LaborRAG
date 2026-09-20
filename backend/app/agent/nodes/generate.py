@@ -1,6 +1,6 @@
 """Generate — 生成节点（快速生成 + 检索路径生成）。"""
+from typing import TYPE_CHECKING
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 
 from app.core.config import settings
 from app.agent.state import AgentState
@@ -8,8 +8,14 @@ from app.agent.prompts import ANSWER_STYLE_RULES, RAG_GENERATE_PROMPT
 from app.utils.text import format_docs, normalize_article
 from app.retrieval.base import BaseRetriever
 
+if TYPE_CHECKING:
+    # langchain_openai 顶层导入实测约 17s（连带 transformers + torch，见
+    # rag_engine.py 的同类注释），而这里只在函数签名里用作注解 ——
+    # 走 TYPE_CHECKING + 字符串注解，让 import app.agent.nodes.* 保持廉价。
+    from langchain_openai import ChatOpenAI
 
-async def simple_generate(retriever: BaseRetriever, gen_llm: ChatOpenAI, grader_llm: ChatOpenAI,
+
+async def simple_generate(retriever: BaseRetriever, gen_llm: "ChatOpenAI", grader_llm: "ChatOpenAI",
                     state: AgentState) -> dict:
     """快速路径：简单问题检索+充分性验证+生成，不经过Agent路由。"""
     question = state.get("rewritten_question") or state["question"]
@@ -115,7 +121,7 @@ async def simple_generate(retriever: BaseRetriever, gen_llm: ChatOpenAI, grader_
     return {"answer": answer, "context_docs": docs, "steps": steps}
 
 
-async def generate_from_retrieval(gen_llm: ChatOpenAI, grader_llm: ChatOpenAI,
+async def generate_from_retrieval(gen_llm: "ChatOpenAI", grader_llm: "ChatOpenAI",
                             state: AgentState) -> dict:
     """Retriever路径生成：基于检索文档直接生成回答。"""
     print(f"[Agent] 🤖 检索路径生成回答...")
