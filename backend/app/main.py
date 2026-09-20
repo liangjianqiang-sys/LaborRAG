@@ -5,15 +5,24 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from app.config import settings
-from app.core.logging_config import setup_logging, get_logger
-from app.core.rag_engine import RAGEngine
+from app.core.config import settings
+from app.core.errors import LLMUnavailableError
+from app.core.logging import setup_logging, get_logger
 from app.api.routes import router, set_engine
 
 logger = get_logger(__name__)
 
-# 全局RAG引擎
-rag_engine = RAGEngine()
+# 全局RAG引擎：在 lifespan 启动时构造（见下方 lifespan）。
+#
+# 刻意**不**在模块级构造、也不在模块级导入 RAGEngine：
+# `RAGEngine.__init__` → `VectorStoreManager.__init__` → `get_embeddings()`
+# 会加载 BGE-M3（约 2GB），且 HuggingFaceEmbeddings 构造时会向 HF Hub 做一次
+# 联网校验。放在模块级意味着：
+#   - 任何 `import app.main`（脚本、导入体检、测试）都付出模型加载代价（实测 ~25s）
+#   - 离线环境下**导入直接抛 ProxyError**，服务连启动都到不了
+# 而 uvicorn 会在开始接收请求前执行 lifespan，所以挪进去不改变启动语义。
+# 注解写成字符串，避免运行时求值 RAGEngine。
+rag_engine: "RAGEngine | None" = None
 
 
 def _preload_eval_models():
@@ -21,7 +30,7 @@ def _preload_eval_models():
     logger.info("预加载评估模型...")
     try:
         from langchain_openai import ChatOpenAI
-        from app.core.embeddings import get_embeddings
+        from app.knowledge.embeddings import get_embeddings
 
         # 1. 预初始化 RAGAS LLM（触发 ragas 内部 prompt 模板加载）
         eval_llm = ChatOpenAI(
@@ -67,14 +76,30 @@ async def lifespan(app: FastAPI):
     for w in settings.warn_on_insecure_secrets():
         logger.warning(f"[密钥安全] {w}")
 
+    # 鉴权状态：未启用时明确告警，避免误以为接口已受保护
+    if settings.AUTH_SECRET:
+        logger.info("   鉴权: 已启用（Bearer Token）")
+    else:
+        logger.warning(
+            "   鉴权: 未启用 —— 所有 API 端点无需凭证即可访问。"
+            "如需对外暴露，请在 .env 中设置 AUTH_SECRET。"
+        )
+
     # 初始化RAG引擎（加载已有向量库或构建新的）
+    # 惰性导入：RAGEngine 的导入链会拉起 jieba 词典与 langchain_core（约 11s），
+    # 只有真正启动服务时才需要
+    from app.services.rag_engine import RAGEngine
+
+    global rag_engine
+    rag_engine = RAGEngine()
     rag_engine.initialize()
     set_engine(rag_engine)
 
     logger.info("RAG引擎初始化完成")
 
     # 将上次未完成的评估任务标记为paused（不自动恢复，需手动续评）
-    from app.evaluation.eval_persistent import load_all_tasks, save_task, file_lock
+    from app.utils.files import file_lock
+    from app.evaluation.persistent import load_all_tasks, save_task
     with file_lock:
         for task in load_all_tasks():
             if task.get("status") in ("running", "scoring"):
@@ -111,6 +136,9 @@ async def add_request_id(request: Request, call_next):
 
 
 # ── 全局异常处理：统一错误格式 + 完整堆栈记日志（替代 routes 里散落的 catch-all-500）──
+# 注意：异常会绕过 request_id 中间件里「给 response 加头」的那行（call_next 抛出后
+# 就没有 response 对象了），所以错误响应在此显式回传 X-Request-ID，
+# 保证成功和失败两种情况客户端都能拿到同一个追踪 ID。
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     request_id = getattr(request.state, "request_id", "unknown")
@@ -118,6 +146,24 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=500,
         content={"detail": "内部服务器错误", "request_id": request_id},
+        headers={"X-Request-ID": request_id},
+    )
+
+
+@app.exception_handler(LLMUnavailableError)
+async def llm_unavailable_handler(request: Request, exc: LLMUnavailableError):
+    """LLM 运维性故障 → 503 + 可操作提示。
+
+    必须注册在 `Exception` 处理器**之前**（FastAPI 按最具体的类型匹配，顺序无关，
+    但放前面便于阅读）。返回 503 而非 500 的用意：这是可重试、可通过配置修复的
+    故障，不是服务端代码缺陷 —— 客户端据此可以提示用户"稍后重试"而不是"系统故障"。
+    """
+    request_id = getattr(request.state, "request_id", "unknown")
+    logger.error(f"[{request_id}] LLM 不可用 {request.method} {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=503,
+        content={"detail": str(exc), "request_id": request_id},
+        headers={"X-Request-ID": request_id},
     )
 
 
@@ -127,6 +173,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return JSONResponse(
         status_code=422,
         content={"detail": "请求参数校验失败", "request_id": request_id, "errors": exc.errors()},
+        headers={"X-Request-ID": request_id},
     )
 
 
@@ -138,6 +185,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 探活端点：挂在 app 上而非 router 上，因此不走 Bearer 鉴权，
+# 供容器 / 负载均衡 / 监控做健康检查（探活请求通常无法携带业务凭证）。
+@app.get("/health", tags=["health"])
+async def health_check():
+    """健康检查：免鉴权，返回服务与知识库状态。"""
+    try:
+        kb_ready = rag_engine.is_ready
+    except Exception:
+        kb_ready = False
+    return {
+        "status": "ok",
+        "version": settings.VERSION,
+        "auth_enabled": bool(settings.AUTH_SECRET),
+        "knowledge_base_ready": kb_ready,
+    }
+
 
 # 注册路由
 app.include_router(router, prefix=settings.API_PREFIX)

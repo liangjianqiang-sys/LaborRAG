@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Settings as SettingsIcon, Save, SlidersHorizontal, AlertTriangle, Gauge, Layers, ArrowLeftRight, SplitSquareHorizontal } from 'lucide-react'
+import { Settings as SettingsIcon, Save, SlidersHorizontal, AlertTriangle, Gauge, Layers, ArrowLeftRight, SplitSquareHorizontal, ShieldCheck, Trash2 } from 'lucide-react'
+import { getAuthToken, setAuthToken } from '../api'
 
 export default function SettingsPage() {
   const [retrieverType, setRetrieverType] = useState('reranked')
@@ -9,10 +10,24 @@ export default function SettingsPage() {
   const [bm25Weight, setBm25Weight] = useState('0.5')
   const [rrfK, setRrfK] = useState('60')
   const [saved, setSaved] = useState(false)
+  const [token, setToken] = useState(getAuthToken())
+  const [tokenSaved, setTokenSaved] = useState(false)
 
   const handleSave = () => {
     setSaved(true)
     setTimeout(() => setSaved(false), 3000)
+  }
+
+  const handleSaveToken = () => {
+    setAuthToken(token)
+    setToken(getAuthToken())
+    setTokenSaved(true)
+    setTimeout(() => setTokenSaved(false), 3000)
+  }
+
+  const handleClearToken = () => {
+    setAuthToken('')
+    setToken('')
   }
 
   return (
@@ -160,6 +175,54 @@ export default function SettingsPage() {
               <p className="text-[10px] text-slate-400 mt-1">{param.desc}</p>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* ── 访问鉴权 ── */}
+      <div className="bg-white rounded-xl border border-slate-200/80 p-5 shadow-card">
+        <div className="flex items-center gap-2 mb-4 pb-3 border-b border-brand-100/50">
+          <ShieldCheck size={16} className="text-brand-500" />
+          <h3 className="font-semibold text-slate-700 text-sm">访问鉴权</h3>
+          <span className={`ml-auto text-[11px] font-medium px-2 py-0.5 rounded-full border ${
+            token
+              ? 'text-emerald-600 bg-emerald-50 border-emerald-200/70'
+              : 'text-slate-400 bg-slate-50 border-slate-200/70'
+          }`}>
+            {token ? '已配置' : '未配置'}
+          </span>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-slate-500 mb-1.5">访问令牌（AUTH_SECRET）</label>
+          <input
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="与 backend/.env 中的 AUTH_SECRET 保持一致"
+            className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm text-slate-700 font-mono focus:outline-none focus:ring-2 focus:ring-brand-400/30 focus:border-brand-400 focus:bg-white transition-all duration-200"
+          />
+          <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+            令牌仅保存在本机浏览器，不会上传到服务端。后端未设置 AUTH_SECRET 时留空即可。
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 mt-4">
+          <button
+            onClick={handleSaveToken}
+            className="inline-flex items-center gap-2 rounded-lg btn-brand px-4 py-2 text-sm transition-all duration-200"
+          >
+            <Save size={15} />
+            保存令牌
+          </button>
+          <button
+            onClick={handleClearToken}
+            disabled={!token}
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-600 transition-all duration-200 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Trash2 size={15} />
+            清除
+          </button>
+          {tokenSaved && <span className="text-xs text-emerald-600 font-medium">已保存</span>}
         </div>
       </div>
 

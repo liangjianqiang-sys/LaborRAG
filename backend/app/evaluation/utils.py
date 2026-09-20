@@ -1,11 +1,10 @@
 """评估体系公共工具函数。"""
 import math
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, List, Optional
 
-# 评估文件操作线程锁（并发写JSON/JSONL时使用）
-file_lock = threading.Lock()
+# 注：file_lock 已下沉到 app.utils.files（通用文件写入原语，不属于评估层）。
+# 它的旧位置在本模块，导致 app/core/vectorstore.py 反向依赖评估层。
 
 
 def parallel_map(

@@ -1,5 +1,49 @@
 const API_BASE = '/api/v1'
 
+// ── 访问令牌 ──────────────────────────────────────────────────
+// 后端 AUTH_SECRET 留空时不启用鉴权，此处没有令牌也能正常请求；
+// 一旦后端配置了 AUTH_SECRET，就必须在「设置」页填入同样的值。
+
+const AUTH_TOKEN_KEY = 'laborrag_auth_token'
+
+export function getAuthToken(): string {
+  return localStorage.getItem(AUTH_TOKEN_KEY) ?? ''
+}
+
+export function setAuthToken(token: string): void {
+  const trimmed = token.trim()
+  if (trimmed) localStorage.setItem(AUTH_TOKEN_KEY, trimmed)
+  else localStorage.removeItem(AUTH_TOKEN_KEY)
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getAuthToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+/**
+ * 统一请求入口：注入 Bearer 凭证，并合并调用方自定义头。
+ * 鉴权逻辑只在这里存在一处，新增接口不会漏带头。
+ */
+async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: { ...authHeaders(), ...((init.headers as Record<string, string>) || {}) },
+  })
+}
+
+/**
+ * 统一错误消息：401 单独提示，避免与业务错误混为一谈。
+ * 后端未启用鉴权却填了令牌，或令牌与 AUTH_SECRET 不一致，都会落到这里。
+ */
+async function readError(res: Response, fallback: string): Promise<string> {
+  if (res.status === 401) {
+    return '未授权：请在「设置」页填入与后端 AUTH_SECRET 一致的访问令牌'
+  }
+  const err = await res.json().catch(() => ({ detail: res.statusText }))
+  return err.detail || fallback
+}
+
 export interface ChatHistoryItem {
   role: 'user' | 'assistant'
   content: string
@@ -43,65 +87,54 @@ export interface DocumentInfo {
 }
 
 export async function sendChat(request: ChatRequest): Promise<ChatResponse> {
-  const res = await fetch(`${API_BASE}/chat`, {
+  const res = await apiFetch('/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || '请求失败')
-  }
+  if (!res.ok) throw new Error(await readError(res, '请求失败'))
   return res.json()
 }
 
 export async function getKnowledgeBaseStatus(): Promise<KnowledgeBaseStatus> {
-  const res = await fetch(`${API_BASE}/knowledge-base/status`)
-  if (!res.ok) throw new Error('获取知识库状态失败')
+  const res = await apiFetch('/knowledge-base/status')
+  if (!res.ok) throw new Error(await readError(res, '获取知识库状态失败'))
   return res.json()
 }
 
 export async function buildKnowledgeBase(rebuild = false): Promise<{ message: string }> {
-  const res = await fetch(`${API_BASE}/knowledge-base/build`, {
+  const res = await apiFetch('/knowledge-base/build', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ rebuild }),
   })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || '构建失败')
-  }
+  if (!res.ok) throw new Error(await readError(res, '构建失败'))
   return res.json()
 }
 
 export async function uploadDocument(file: File): Promise<{ success: boolean; filename: string; chunk_count: number; message: string }> {
   const formData = new FormData()
   formData.append('file', file)
-  const res = await fetch(`${API_BASE}/documents/upload`, {
+  // 不设 Content-Type：交给浏览器带 boundary
+  const res = await apiFetch('/documents/upload', {
     method: 'POST',
     body: formData,
   })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || '上传失败')
-  }
+  if (!res.ok) throw new Error(await readError(res, '上传失败'))
   return res.json()
 }
 
 export async function listDocuments(): Promise<{ documents: DocumentInfo[]; total: number }> {
-  const res = await fetch(`${API_BASE}/documents/list`)
-  if (!res.ok) throw new Error('获取文档列表失败')
+  const res = await apiFetch('/documents/list')
+  if (!res.ok) throw new Error(await readError(res, '获取文档列表失败'))
   return res.json()
 }
 
 export async function deleteDocument(filename: string): Promise<{ message: string }> {
-  const res = await fetch(`${API_BASE}/documents/${encodeURIComponent(filename)}`, {
+  const res = await apiFetch(`/documents/${encodeURIComponent(filename)}`, {
     method: 'DELETE',
   })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || '删除失败')
-  }
+  if (!res.ok) throw new Error(await readError(res, '删除失败'))
   return res.json()
 }
 
@@ -203,20 +236,20 @@ export interface BadCase {
 }
 
 export async function getEvaluationReport(): Promise<EvalComparison> {
-  const res = await fetch(`${API_BASE}/evaluation/report`)
-  if (!res.ok) throw new Error('获取评估报告失败')
+  const res = await apiFetch('/evaluation/report')
+  if (!res.ok) throw new Error(await readError(res, '获取评估报告失败'))
   return res.json()
 }
 
 export async function getObservability(): Promise<Observability> {
-  const res = await fetch(`${API_BASE}/evaluation/observability`)
-  if (!res.ok) throw new Error('获取可观测性数据失败')
+  const res = await apiFetch('/evaluation/observability')
+  if (!res.ok) throw new Error(await readError(res, '获取可观测性数据失败'))
   return res.json()
 }
 
 export async function getBadCases(topN = 5): Promise<BadCase[]> {
-  const res = await fetch(`${API_BASE}/evaluation/bad-cases?top_n=${topN}`)
-  if (!res.ok) throw new Error('获取Bad Case失败')
+  const res = await apiFetch(`/evaluation/bad-cases?top_n=${topN}`)
+  if (!res.ok) throw new Error(await readError(res, '获取Bad Case失败'))
   return res.json()
 }
 
@@ -286,24 +319,18 @@ export async function createPersistentTask(
   if (evalSubset) params.set('eval_subset', evalSubset)
   if (difficulty) params.set('difficulty', difficulty)
   const qs = params.toString() ? `?${params.toString()}` : ''
-  const res = await fetch(`${API_BASE}/evaluation/persistent/create${qs}`, {
+  const res = await apiFetch(`/evaluation/persistent/create${qs}`, {
     method: 'POST',
   })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || '创建任务失败')
-  }
+  if (!res.ok) throw new Error(await readError(res, '创建任务失败'))
   return res.json()
 }
 
 async function _persistentPost(action: string, taskId: string, errorMsg: string): Promise<{ task_id: string; message: string; status: string }> {
-  const res = await fetch(`${API_BASE}/evaluation/persistent/${action}?task_id=${encodeURIComponent(taskId)}`, {
+  const res = await apiFetch(`/evaluation/persistent/${action}?task_id=${encodeURIComponent(taskId)}`, {
     method: 'POST',
   })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || errorMsg)
-  }
+  if (!res.ok) throw new Error(await readError(res, errorMsg))
   return res.json()
 }
 
@@ -313,37 +340,31 @@ export const restartPersistentTask = (taskId: string) => _persistentPost('restar
 export const retryFailedPersistentTask = (taskId: string) => _persistentPost('retry-failed', taskId, '重试失败')
 
 export async function listPersistentTasks(): Promise<{ tasks: PersistentTask[] }> {
-  const res = await fetch(`${API_BASE}/evaluation/persistent/tasks`)
-  if (!res.ok) throw new Error('获取任务列表失败')
+  const res = await apiFetch('/evaluation/persistent/tasks')
+  if (!res.ok) throw new Error(await readError(res, '获取任务列表失败'))
   return res.json()
 }
 
 export async function getPersistentProgress(taskId: string): Promise<PersistentProgress> {
-  const res = await fetch(`${API_BASE}/evaluation/persistent/progress?task_id=${encodeURIComponent(taskId)}`)
-  if (!res.ok) throw new Error('获取进度失败')
+  const res = await apiFetch(`/evaluation/persistent/progress?task_id=${encodeURIComponent(taskId)}`)
+  if (!res.ok) throw new Error(await readError(res, '获取进度失败'))
   return res.json()
 }
 
 export async function getPersistentReport(taskId: string): Promise<PersistentReport> {
-  const res = await fetch(`${API_BASE}/evaluation/persistent/report?task_id=${encodeURIComponent(taskId)}`)
-  if (!res.ok) throw new Error('获取报告失败')
+  const res = await apiFetch(`/evaluation/persistent/report?task_id=${encodeURIComponent(taskId)}`)
+  if (!res.ok) throw new Error(await readError(res, '获取报告失败'))
   return res.json()
 }
 
 export async function forceStopPersistentTask(taskId: string): Promise<{ task_id: string; message: string; status: string }> {
-  const res = await fetch(`${API_BASE}/evaluation/persistent/force-stop?task_id=${encodeURIComponent(taskId)}`, { method: 'POST' })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || '停止任务失败')
-  }
+  const res = await apiFetch(`/evaluation/persistent/force-stop?task_id=${encodeURIComponent(taskId)}`, { method: 'POST' })
+  if (!res.ok) throw new Error(await readError(res, '停止任务失败'))
   return res.json()
 }
 
 export async function deletePersistentTask(taskId: string): Promise<{ task_id: string; message: string }> {
-  const res = await fetch(`${API_BASE}/evaluation/persistent/delete?task_id=${encodeURIComponent(taskId)}`, { method: 'DELETE' })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || '删除任务失败')
-  }
+  const res = await apiFetch(`/evaluation/persistent/delete?task_id=${encodeURIComponent(taskId)}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(await readError(res, '删除任务失败'))
   return res.json()
 }

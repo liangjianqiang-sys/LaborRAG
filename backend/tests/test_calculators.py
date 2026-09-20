@@ -6,14 +6,15 @@
 """
 import math
 
-from app.core.generator.calculators import (
-    calculate_overtime_pay,
-    calculate_severance_pay,
-    calculate_damage_pay,
+from app.tools.labor_calculator import (
+    DAILY_WORK_HOURS,
+    MONTHLY_WORK_DAYS,
     _parse_cn_salary,
     auto_calculate,
+    calculate_damage_pay,
+    calculate_overtime_pay,
+    calculate_severance_pay,
 )
-from app.core.generator.constants import MONTHLY_WORK_DAYS, DAILY_WORK_HOURS
 
 
 def test_overtime_three_rates():

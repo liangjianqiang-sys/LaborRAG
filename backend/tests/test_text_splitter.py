@@ -8,8 +8,8 @@ import re
 
 from langchain_core.documents import Document
 
-from app.core.text_splitter import LawArticleSplitter
-from app.config import settings
+from app.knowledge.splitter import LawArticleSplitter
+from app.core.config import settings
 
 
 # ── 静态/纯方法：零依赖 ──

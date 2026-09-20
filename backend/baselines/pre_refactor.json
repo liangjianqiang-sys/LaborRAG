@@ -1,0 +1,693 @@
+{
+  "meta": {
+    "generated_at": "2026-09-16T21:04:07",
+    "git_commit": "a870285",
+    "pipeline": "classify_complexity + retrieve_docs（零 LLM 确定性路径）",
+    "covered": [
+      "复杂度分类（纯规则）",
+      "向量 + BM25 + RRF 融合",
+      "父子分块提升",
+      "知识图谱伴生法条注入",
+      "概念映射提升/注入并置顶",
+      "截断与兜底"
+    ],
+    "not_covered": [
+      "LLM 查询改写",
+      "HyDE",
+      "多查询扩展",
+      "生成",
+      "RAGAS"
+    ],
+    "retriever": "hybrid",
+    "top_k": 12,
+    "score_threshold": 0.15,
+    "subset": "full",
+    "dataset_size": 20,
+    "vector_store": "D:\\LaborRAG_data\\vector_store"
+  },
+  "aggregate": {
+    "precision@1": 0.85,
+    "precision@3": 0.4667,
+    "precision@5": 0.29,
+    "recall@5": 0.775,
+    "mrr": 0.925,
+    "map": 0.7384
+  },
+  "per_question": [
+    {
+      "question": "没签合同被辞了",
+      "question_type": "retrieve",
+      "difficulty": "easy",
+      "complexity": "simple",
+      "relevant_ids": [
+        "劳动合同法第82条",
+        "劳动合同法第10条"
+      ],
+      "retrieved_ids": [
+        "劳动合同法第82条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）第24条",
+        "劳动法第25条",
+        "劳动合同法第46条",
+        "劳动合同法第14条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）第31条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 6,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.3333,
+        "precision@5": 0.2,
+        "recall@5": 0.5,
+        "mrr": 1.0,
+        "map": 0.5
+      }
+    },
+    {
+      "question": "试用期最长多久？",
+      "question_type": "retrieve",
+      "difficulty": "easy",
+      "complexity": "simple",
+      "relevant_ids": [
+        "劳动合同法第19条",
+        "劳动合同法第20条"
+      ],
+      "retrieved_ids": [
+        "劳动法第21条",
+        "劳动合同法第19条",
+        "劳动合同法第39条",
+        "劳动合同法第40条",
+        "劳动合同法第46条"
+      ],
+      "hit@1": 0.0,
+      "retrieved_count": 5,
+      "metrics": {
+        "precision@1": 0.0,
+        "precision@3": 0.3333,
+        "precision@5": 0.2,
+        "recall@5": 0.5,
+        "mrr": 0.5,
+        "map": 0.25
+      }
+    },
+    {
+      "question": "被公司开除了有赔偿吗？",
+      "question_type": "retrieve",
+      "difficulty": "easy",
+      "complexity": "medium",
+      "relevant_ids": [
+        "劳动合同法第46条",
+        "劳动合同法第87条"
+      ],
+      "retrieved_ids": [
+        "劳动合同法第46条",
+        "劳动合同法第39条",
+        "工伤保险条例第66条",
+        "劳动法第25条",
+        "劳动合同法第42条",
+        "工资支付暂行规定第16条",
+        "劳动合同法第86条",
+        "中华人民共和国职业病防治法第58条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）第41条",
+        "劳动合同法第57条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 10,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.3333,
+        "precision@5": 0.2,
+        "recall@5": 0.5,
+        "mrr": 1.0,
+        "map": 0.5
+      }
+    },
+    {
+      "question": "拖欠工资去哪投诉？",
+      "question_type": "retrieve",
+      "difficulty": "easy",
+      "complexity": "simple",
+      "relevant_ids": [
+        "劳动合同法第85条",
+        "劳动合同法第77条"
+      ],
+      "retrieved_ids": [
+        "劳动合同法第85条",
+        "劳动合同法第38条",
+        "劳动争议调解仲裁法第9条",
+        "工资支付暂行规定第18条",
+        "社会保险法第82条",
+        "女职工劳动保护特别规定第14条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 7,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.3333,
+        "precision@5": 0.2,
+        "recall@5": 0.5,
+        "mrr": 1.0,
+        "map": 0.5
+      }
+    },
+    {
+      "question": "加班工资怎么算？",
+      "question_type": "retrieve",
+      "difficulty": "medium",
+      "complexity": "complex",
+      "relevant_ids": [
+        "劳动法第44条",
+        "劳动法第36条"
+      ],
+      "retrieved_ids": [
+        "劳动法第44条",
+        "劳动法第41条",
+        "劳动合同法实施条例第6条",
+        "失业保险条例第16条",
+        "劳动合同法实施条例第1条",
+        "劳动合同法实施条例第2条",
+        "劳动合同法实施条例第3条",
+        "劳动合同法实施条例第4条",
+        "劳动合同法实施条例第5条",
+        "劳动合同法实施条例第7条",
+        "劳动合同法实施条例第8条",
+        "劳动合同法实施条例第9条",
+        "劳动合同法实施条例第10条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 14,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.3333,
+        "precision@5": 0.2,
+        "recall@5": 0.5,
+        "mrr": 1.0,
+        "map": 0.5
+      }
+    },
+    {
+      "question": "经济补偿金怎么计算？",
+      "question_type": "retrieve",
+      "difficulty": "medium",
+      "complexity": "complex",
+      "relevant_ids": [
+        "劳动合同法第47条",
+        "劳动合同法第46条"
+      ],
+      "retrieved_ids": [
+        "劳动合同法第46条",
+        "劳动合同法第47条",
+        "劳动争议调解仲裁法第2条",
+        "劳动合同法第38条",
+        "劳动合同法第36条",
+        "劳动合同法第86条",
+        "劳动合同法实施条例第25条",
+        "劳动合同法实施条例第27条",
+        "劳动合同法第45条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）第1条",
+        "劳动合同法实施条例第10条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（二）第6条",
+        "社会保险法第19条",
+        "社会保险法第32条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 14,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.6667,
+        "precision@5": 0.4,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "map": 1.0
+      }
+    },
+    {
+      "question": "什么情况可以认定为工伤？",
+      "question_type": "retrieve",
+      "difficulty": "medium",
+      "complexity": "simple",
+      "relevant_ids": [
+        "工伤保险条例第14条",
+        "工伤保险条例第15条"
+      ],
+      "retrieved_ids": [
+        "工伤保险条例第15条",
+        "工伤保险条例第14条",
+        "工伤保险条例第17条",
+        "劳动合同法第46条",
+        "工伤保险条例第16条",
+        "社会保险法第37条",
+        "工伤保险条例第31条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 7,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.6667,
+        "precision@5": 0.4,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "map": 1.0
+      }
+    },
+    {
+      "question": "女职工怀孕期间能安排夜班吗？",
+      "question_type": "retrieve",
+      "difficulty": "medium",
+      "complexity": "medium",
+      "relevant_ids": [
+        "女职工劳动保护特别规定第6条"
+      ],
+      "retrieved_ids": [
+        "女职工劳动保护特别规定第6条",
+        "劳动合同法第42条",
+        "劳动法第61条",
+        "劳动法第63条",
+        "最低工资规定第3条",
+        "劳动合同法第87条",
+        "劳动合同法第48条",
+        "女职工劳动保护特别规定第9条",
+        "中华人民共和国职业病防治法第38条",
+        "劳动法第60条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 10,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.3333,
+        "precision@5": 0.2,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "map": 1.0
+      }
+    },
+    {
+      "question": "劳动争议申请仲裁的时效是多久？",
+      "question_type": "retrieve",
+      "difficulty": "medium",
+      "complexity": "simple",
+      "relevant_ids": [
+        "劳动争议调解仲裁法第27条"
+      ],
+      "retrieved_ids": [
+        "劳动争议调解仲裁法第27条",
+        "劳动争议调解仲裁法第2条",
+        "劳动法第82条",
+        "劳动争议调解仲裁法第5条",
+        "劳动法第83条",
+        "劳动争议调解仲裁法第43条",
+        "劳动争议调解仲裁法第50条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 7,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.3333,
+        "precision@5": 0.2,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "map": 1.0
+      }
+    },
+    {
+      "question": "孕期被公司辞退了怎么办？",
+      "question_type": "retrieve",
+      "difficulty": "hard",
+      "complexity": "medium",
+      "relevant_ids": [
+        "劳动合同法第42条",
+        "劳动合同法第87条"
+      ],
+      "retrieved_ids": [
+        "劳动合同法第39条",
+        "劳动合同法第42条",
+        "劳动合同法第40条",
+        "劳动合同法第46条",
+        "女职工劳动保护特别规定第6条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）第24条",
+        "女职工劳动保护特别规定第5条",
+        "劳动合同法第87条",
+        "劳动合同法第48条",
+        "劳动争议调解仲裁法第28条",
+        "劳动争议调解仲裁法第2条",
+        "劳动法第29条",
+        "劳动法第61条"
+      ],
+      "hit@1": 0.0,
+      "retrieved_count": 13,
+      "metrics": {
+        "precision@1": 0.0,
+        "precision@3": 0.3333,
+        "precision@5": 0.2,
+        "recall@5": 0.5,
+        "mrr": 0.5,
+        "map": 0.375
+      }
+    },
+    {
+      "question": "下班路上被车撞了算工伤吗？",
+      "question_type": "retrieve",
+      "difficulty": "hard",
+      "complexity": "medium",
+      "relevant_ids": [
+        "工伤保险条例第14条",
+        "工伤保险条例第16条"
+      ],
+      "retrieved_ids": [
+        "工伤保险条例第14条",
+        "工伤保险条例第15条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）第24条",
+        "工伤保险条例第33条",
+        "工伤保险条例第34条",
+        "工伤保险条例第35条",
+        "工伤保险条例第30条",
+        "社会保险法第39条",
+        "社会保险法第38条",
+        "工伤保险条例第21条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 10,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.3333,
+        "precision@5": 0.2,
+        "recall@5": 0.5,
+        "mrr": 1.0,
+        "map": 0.5
+      }
+    },
+    {
+      "question": "公司没交社保我可以随时辞职并要求补偿吗？",
+      "question_type": "retrieve",
+      "difficulty": "hard",
+      "complexity": "simple",
+      "relevant_ids": [
+        "劳动合同法第38条",
+        "劳动合同法第46条"
+      ],
+      "retrieved_ids": [
+        "劳动合同法第38条",
+        "劳动合同法第46条",
+        "劳动合同法第37条",
+        "社会保险法第58条",
+        "社会保险法第63条",
+        "社会保险法第83条",
+        "劳动合同法第43条",
+        "工资支付暂行规定第18条",
+        "社会保险法第45条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 9,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.6667,
+        "precision@5": 0.4,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "map": 1.0
+      }
+    },
+    {
+      "question": "劳务派遣工和正式工同工同酬吗？",
+      "question_type": "retrieve",
+      "difficulty": "hard",
+      "complexity": "medium",
+      "relevant_ids": [
+        "劳动合同法第63条",
+        "劳动合同法第58条"
+      ],
+      "retrieved_ids": [
+        "劳动合同法第63条",
+        "劳动合同法第58条",
+        "劳动合同法第74条",
+        "劳动合同法第60条",
+        "劳动合同法第59条",
+        "劳动合同法第65条",
+        "劳动合同法第92条",
+        "劳动合同法第57条",
+        "劳动争议调解仲裁法第22条",
+        "劳动合同法实施条例第30条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 10,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.6667,
+        "precision@5": 0.4,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "map": 1.0
+      }
+    },
+    {
+      "question": "月薪8000加班10小时加班费多少？",
+      "question_type": "calculate",
+      "difficulty": "medium",
+      "complexity": "complex",
+      "relevant_ids": [
+        "劳动法第44条",
+        "劳动法第36条"
+      ],
+      "retrieved_ids": [
+        "劳动法第41条",
+        "劳动法第44条",
+        "劳动法第36条",
+        "劳动合同法第85条",
+        "法条适用前提速查表第46条",
+        "劳动法第91条",
+        "劳动合同法第38条",
+        "劳动法第43条",
+        "劳动合同法第31条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）第42条",
+        "劳动合同法第62条",
+        "劳动合同法第68条",
+        "劳动合同法第72条"
+      ],
+      "hit@1": 0.0,
+      "retrieved_count": 13,
+      "metrics": {
+        "precision@1": 0.0,
+        "precision@3": 0.6667,
+        "precision@5": 0.4,
+        "recall@5": 1.0,
+        "mrr": 0.5,
+        "map": 0.5833
+      }
+    },
+    {
+      "question": "工作5年月薪6000经济补偿金多少？",
+      "question_type": "calculate",
+      "difficulty": "easy",
+      "complexity": "complex",
+      "relevant_ids": [
+        "劳动合同法第47条",
+        "劳动合同法第46条"
+      ],
+      "retrieved_ids": [
+        "劳动合同法第46条",
+        "劳动合同法第47条",
+        "劳动合同法第38条",
+        "劳动合同法第36条",
+        "劳动合同法第40条",
+        "职工带薪年休假条例第3条",
+        "职工带薪年休假条例第1条",
+        "劳动争议调解仲裁法第54条",
+        "失业保险条例第17条",
+        "中华人民共和国职业病防治法第87条",
+        "劳动合同法实施条例第9条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）第1条",
+        "劳动合同法第45条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 14,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.6667,
+        "precision@5": 0.4,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "map": 1.0
+      }
+    },
+    {
+      "question": "月薪10000工作10年被违法辞退赔偿金多少？",
+      "question_type": "calculate",
+      "difficulty": "hard",
+      "complexity": "complex",
+      "relevant_ids": [
+        "劳动合同法第47条",
+        "劳动合同法第87条"
+      ],
+      "retrieved_ids": [
+        "劳动合同法第87条",
+        "劳动合同法第48条",
+        "劳动合同法第39条",
+        "劳动合同法第40条",
+        "劳动合同法第46条",
+        "职工带薪年休假条例第5条",
+        "劳动合同法第86条",
+        "劳动合同法实施条例第25条",
+        "劳动合同法实施条例第10条",
+        "法条适用前提速查表第46条",
+        "职工带薪年休假条例第1条",
+        "职工带薪年休假条例第3条",
+        "职工带薪年休假条例第4条",
+        "劳动合同法实施条例第9条",
+        "失业保险条例第17条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 15,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.3333,
+        "precision@5": 0.2,
+        "recall@5": 0.5,
+        "mrr": 1.0,
+        "map": 0.5
+      }
+    },
+    {
+      "question": "累计工作15年年休假多少天？",
+      "question_type": "calculate",
+      "difficulty": "easy",
+      "complexity": "complex",
+      "relevant_ids": [
+        "职工带薪年休假条例第3条"
+      ],
+      "retrieved_ids": [
+        "职工带薪年休假条例第3条",
+        "职工带薪年休假条例第5条",
+        "职工带薪年休假条例第1条",
+        "法条适用前提速查表第46条",
+        "女职工劳动保护特别规定第7条",
+        "职工带薪年休假条例第4条",
+        "职工带薪年休假条例第2条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（二）第10条",
+        "失业保险条例第17条",
+        "劳动合同法第68条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 10,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.3333,
+        "precision@5": 0.2,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "map": 1.0
+      }
+    },
+    {
+      "question": "经济补偿金和赔偿金有什么区别？",
+      "question_type": "compare",
+      "difficulty": "medium",
+      "complexity": "complex",
+      "relevant_ids": [
+        "劳动合同法第47条",
+        "劳动合同法第87条"
+      ],
+      "retrieved_ids": [
+        "劳动合同法第47条",
+        "劳动合同法第87条",
+        "劳动合同法第46条",
+        "劳动合同法第48条",
+        "劳动合同法第86条",
+        "劳动争议调解仲裁法第28条",
+        "劳动争议调解仲裁法第27条",
+        "工资支付暂行规定第18条",
+        "劳动合同法实施条例第25条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）第1条",
+        "劳动争议调解仲裁法第2条",
+        "劳动合同法第45条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）第45条",
+        "劳动法第91条",
+        "劳动争议调解仲裁法第47条",
+        "劳动合同法实施条例第34条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 16,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.6667,
+        "precision@5": 0.4,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "map": 1.0
+      }
+    },
+    {
+      "question": "固定期限和无固定期限劳动合同有什么区别？",
+      "question_type": "compare",
+      "difficulty": "medium",
+      "complexity": "complex",
+      "relevant_ids": [
+        "劳动合同法第14条",
+        "劳动合同法第12条"
+      ],
+      "retrieved_ids": [
+        "劳动合同法第14条",
+        "劳动合同法第13条",
+        "劳动法第20条",
+        "劳动合同法第39条",
+        "劳动合同法第82条",
+        "劳动合同法第46条",
+        "劳动合同法第12条",
+        "劳动合同法第41条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（二）第9条",
+        "劳动合同法实施条例第19条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）第34条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（二）第11条",
+        "劳动合同法实施条例第18条",
+        "劳动合同法实施条例第12条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 14,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.3333,
+        "precision@5": 0.2,
+        "recall@5": 0.5,
+        "mrr": 1.0,
+        "map": 0.6429
+      }
+    },
+    {
+      "question": "协商解除和公司单方辞退有什么区别？",
+      "question_type": "compare",
+      "difficulty": "medium",
+      "complexity": "complex",
+      "relevant_ids": [
+        "劳动合同法第36条",
+        "劳动合同法第39条",
+        "劳动合同法第40条"
+      ],
+      "retrieved_ids": [
+        "劳动合同法第39条",
+        "劳动合同法第36条",
+        "劳动合同法第46条",
+        "劳动合同法第40条",
+        "法条适用前提速查表第46条",
+        "劳动争议调解仲裁法第28条",
+        "劳动争议调解仲裁法第27条",
+        "劳动合同法第42条",
+        "劳动争议调解仲裁法第2条",
+        "劳动合同法第43条",
+        "劳动合同法第57条",
+        "女职工劳动保护特别规定第5条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（一）第44条",
+        "最高人民法院关于审理劳动争议案件适用法律问题的解释（二）第12条",
+        "中华人民共和国职业病防治法第63条",
+        "劳动法第67条"
+      ],
+      "hit@1": 1.0,
+      "retrieved_count": 16,
+      "metrics": {
+        "precision@1": 1.0,
+        "precision@3": 0.6667,
+        "precision@5": 0.6,
+        "recall@5": 1.0,
+        "mrr": 1.0,
+        "map": 0.9167
+      }
+    }
+  ]
+}

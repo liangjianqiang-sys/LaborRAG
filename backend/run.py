@@ -18,7 +18,7 @@ os.chdir(BACKEND_DIR)
 
 if __name__ == "__main__":
     # 统一日志配置
-    from app.core.logging_config import setup_logging
+    from app.core.logging import setup_logging
     setup_logging()
 
     import uvicorn

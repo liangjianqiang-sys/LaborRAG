@@ -13,8 +13,11 @@ venv/
 env/
 
 # 环境变量（含API Key）
+# .env 本身及其各种变体/备份（避免带密钥的文件被误提交）
 .env
 .env.local
+.env.*
+!.env.example
 
 # IDE
 .idea/
@@ -61,3 +64,10 @@ Thumbs.db
 
 # 日志
 *.log
+
+# 工作记忆目录（AI 助手的项目笔记，属本地会话产物）
+.workbuddy-ai/
+
+# 个人简历（与项目代码无关，不随仓库分发）
+docs/resume.md
+generate_resume_pdf.py
