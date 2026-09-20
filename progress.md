@@ -183,3 +183,182 @@
 ---
 
 *每个阶段完成后或遇到错误时更新此文件*
+
+
+---
+
+## 会话 4：2026-09-17（RAGAS 评估 + 抓出 3 个静默丢数据的缺陷）
+
+### 阶段 3 收尾：拆分大文件（routes.py）
+
+`app/api/routes.py` 12814B → **679B**（仅聚合），拆出四个模块：
+
+    app/api/deps.py        引擎单例引用 + SUPPORTED_EXT + require_engine
+    app/api/chat.py        /chat
+    app/api/knowledge.py   /knowledge-base/*, /documents/*
+    app/api/evaluation.py  /evaluation/*
+
+**拆分无端点丢失**：用 OpenAPI 逐条核对，当前 22 个端点 vs 拆分前 21 个
+（旧 `routes.py` 内不含 `/api/v1` 前缀，挂载时加）+ `/health`，一一对应。
+
+**鉴权不变量**：旧实现把 `verify_bearer` 挂在唯一的 router 上，新端点自动继承。
+拆分后 `include_router` 的子路由**不会**继承聚合器的依赖，所以三个子路由各自
+声明 `APIRouter(dependencies=[Depends(verify_bearer)])`。
+⚠️ 这个不变量当时**没有测试守住** —— 见会话 5 补的结构守卫。
+
+### 跑通 RAGAS 评估（重构后第一次）
+
+Smoke(5 题) 完整评估，13m53s：
+
+| 指标 | 值 |
+|---|---|
+| Faithfulness | 0.8289 |
+| Context Precision | 0.7011 |
+| Context Recall | 0.5667 |
+| 幻觉率 | 0.1711 |
+| 完整性 | 0.8 |
+
+### 发现并修复的 3 个缺陷（Bug 11/12/13）
+
+- **Bug 11**：`runner.py` 按模型名判断是否关思考 → 非 qwen 模型 98% 输出 token 是思考
+- **Bug 12**：对比路径从 `rewritten_question` 提取概念，而改写会剥掉连接词
+  → 切分失败 → 两次检索同一个整句 → 对比路径退化成单查询（与 Bug 9 同根因）
+- **Bug 13**：`run_eval.py` 硬编码 `P@1`/`R@5`/`MRR`，而指标层产出
+  `precision@1`/`recall@5`/`mrr` → 检索指标**永远显示 N/A**，数据却在同一个响应体里
+
+### 测试结果
+
+- pytest：159 → **171 passed**
+- 新增 3 个测试文件（10 例），**三个修复各有阴性对照**
+
+### 错误日志（会话 4 追加）
+
+| 错误 | 原因 | 处理 |
+|---|---|---|
+| `name 'extra_body' is not defined` | 我在做阴性对照时把文件改坏，而**延迟导入的模块会在调用时才读磁盘** | 修回即可；反之也说明「修完不用重启」 |
+| 阴性对照没红（空跑守卫） | 只测了 helper，而修复在**调用点** | 改用「记录 query 的检索器桩」测调用点行为 |
+
+### 五问重启检查
+
+1. 现在到哪了？→ 阶段 3 完成，RAGAS 首次跑通
+2. 验证网如何？→ 导入冒烟 76/76；检索基线 Δ=0；pytest 171；RAGAS 跑通
+3. 下一步？→ 找客观盲区（哪些模块从没被测过）
+4. 有什么阻塞？→ 无
+5. 有没有未记录的决定？→ 「重依赖一律惰性导入」已写入代码注释
+
+---
+
+## 会话 5：2026-09-20（git 事故抢救 + 死代码清理 + 结构守卫）
+
+### ⚠️ 事故：`.git` 被「删除到回收站」
+
+做 A/B 导入耗时对比时，含 `git stash -q` 的命令被 SIGTERM 中断，之后 `git`
+报 **「not a git repository」**。
+
+**根因**：git 的 `is_git_directory()` 要求 `HEAD` / `objects` / **`refs`**
+三者齐全 —— 只缺 `refs` 一个目录，整个仓库就被判为非仓库。
+
+**破坏面**：`.git/objects/pack/*.pack`（主 pack 15.19MB）、约 300 个散对象被删。
+D 盘回收站里找到 **494 个来自 `LaborRAG\.git` 的条目**，时间集中在 16:19–16:20，
+其中有 `maintenance.lock` ×10、`HEAD.lock` ×11、`packed-refs.lock` ×12
+—— **同一路径被反复删除**，说明有东西在周期性把 `.git` 当垃圾清理。
+
+**抢救（全部可验证）**：
+
+1. 工作区完整备份 → `D:/tmp/LaborRAG_worktree_20260920.tar.gz`（7.1MB / 725 文件）
+2. 重建 `.git/refs/{heads,tags,remotes}` + 写入 `refs/heads/main`
+3. 解析回收站 `$I` 元数据（`size(8B)|deltime(8B)|pathlen(4B)|UTF-16LE path`），
+   还原 **304 文件 + 77 目录**
+   - 必须跳过 `.lock`（陈旧锁会让 git 彻底锁死）
+   - 目标路径是**残留空目录**时不能跳过，否则对象还原不上（第一遍漏了 61 个）
+4. **18 个缺失 blob 全部字节级重建**：17 个用
+   `git hash-object -w --path=<路径>`（`--path` 应用 autocrlf 归一化）；
+   1 个（`generate.py`，我改过）用**反向撤销自己的改动**重建，验证哈希一致
+5. **HEAD 的 tree 用 `git write-tree` 精确命中** —— `git commit` 后 index 仍保存
+   该 commit 的树内容，重建出完全相同的 SHA（`3a1b953d…`）
+6. **5 处断链用 `git replace --graft` 桥接** —— 关键：**reflog 里直接记录了父子
+   关系**（`<old> <new> …\t commit: msg` 的 `old` 就是 parent）
+
+**结果：`git log` 从「只列 11 个就 fatal」恢复到列出 39 个，一直到 `Initial commit`。**
+
+**遗留（可接受）**：`4177a0c` 的 tree 仍缺（只影响该 commit 的 `git log -p`）；
+`git replace` 引用不随 push 传播，换机器需重建。
+
+### 死代码清理（两处，都由「重依赖」线索牵出）
+
+- `app/retrieval/sparse.py` —— 从未接线的检索器（用户删除）
+- `EvalRunner.METRICS` —— 类属性，全仓零读取
+- `_N1ChatModel(BaseChatModel)` —— 39 行，全仓零引用
+
+后两个是 `runner.py` 模块级重依赖的**唯一原因**：`METRICS` 强制 `ragas.metrics`，
+`_N1ChatModel` 强制 `langchain_core.language_models`（基类必须在类创建时可用，
+**无法惰性化**）。删除后 **`import app.evaluation.runner` 17.30s → 0.94s（18 倍）**。
+
+### 重依赖导入的完整追查链
+
+1. 7 个模块模块级 `import langchain_openai` → `import app.agent.graph` 17.5s
+2. 改成 `TYPE_CHECKING` + 字符串注解后**仍然拉 torch** → 说明找错了对象
+3. import hook 抓到真凶：**`ChatPromptTemplate` 的「取值」本身**触发
+   `langchain_core.prompts.__getattr__` → `prompts.chat` → `messages.utils`
+   → `messages.__getattr__` → `block_translators.openai` → `language_models._utils` → torch
+4. 逐条测量，定位三个「昂贵入口」（都经 `block_translators`）：
+
+   | 导入 | 耗时 | torch |
+   |---|---|---|
+   | `langchain_core.prompts.ChatPromptTemplate` | 16.6s | ✓ |
+   | `langchain_core.output_parsers.StrOutputParser` | 15.7s | ✓ |
+   | `langchain_core.language_models.BaseChatModel` | 15.2s | ✓ |
+   | `langchain_core.messages.BaseMessage` | 0.7s | ✗ |
+   | `langchain_core.documents.Document` | 0.4s | ✗ |
+
+5. **决定不动 langchain_core**：把 `prompts` 也下沉到函数内只是把 15s 从
+   **启动**挪到**首次请求**，对答辩演示反而更糟，不是净收益。
+
+### 新增两条结构守卫（含非空性检查）
+
+- `tests/test_heavy_imports.py` —— AST 扫 `app/**` 的**模块级** import，
+  禁 10 个重依赖。非空性用例同时验证「只扫模块级」（函数内的 import 不得误报，
+  否则会逼人把 import 提到模块级，正好做反）
+- `tests/test_api_auth_wiring.py` —— 遍历聚合路由下每条路由，断言
+  `dependencies` 含 `verify_bearer`。漏挂新子路由 = **静默鉴权绕过**，
+  而 `TestAuth` 打的是具体端点，不会变红
+
+### 测试结果
+
+- pytest：171 → **214 passed**
+- **两个阴性对照均确认能变红**：注入模块级 `import torch` → 重依赖守卫 FAILED；
+  摘掉 `knowledge.py` 的 `dependencies` → 鉴权守卫 FAILED 并列出 5 个裸奔端点
+
+### 错误日志（会话 5 追加）
+
+| 错误 | 原因 | 处理 |
+|---|---|---|
+| `git` 报「不是仓库」 | 只缺 `.git/refs` 目录 | 重建目录即恢复 |
+| 正则「莫名不匹配」 | **Git Bash 把 heredoc 里的 `\n` 转成 `/n`** | 改用 `chr(10)` / 逐行处理 |
+| `tar: Cannot connect to D:` | Git Bash 把 `D:/x` 当远程主机 | 改用 `/d/x` |
+| `Depends` 对象没有 `.call` | FastAPI 用 `.dependency` 存函数 | 改属性名 |
+| 本地接口返回 502 | 本机 `http_proxy` 拦截 `127.0.0.1` | `ProxyHandler({})` 绕过 |
+
+### 五问重启检查
+
+1. 现在到哪了？→ 阶段 0–4 全完成；git 事故已修复；重依赖已清零
+2. 验证网如何？→ 导入冒烟 76/76；基线 Δ=0；pytest 214；RAGAS 跑通（smoke）
+3. 下一步？→ 20 题完整评估（**留到最后**）、文档回写、`persistent.py` 拆分
+4. 有什么阻塞？→ 无
+5. 有没有未记录的决定？→ 「不做 langchain_core 的惰性化」已记录理由
+
+### 额度测算（为零额度离线完成，供决定是否跑 20 题）
+
+读 `ragas 0.4.3` 源码数清调用结构：`Faithfulness` **2 次**、
+`ContextRecall` **1 次**、`ContextPrecision` **每个子块 1 次**（大头）。
+用上次 smoke 的真实缓存数据复刻子块切分，实测**子块均值 36.8 个**
+→ 每题约 40 次 RAGAS 调用，20 题约 800 次。
+
+| 槽位 | 20 题预估 | 可用 | 占比 |
+|---|---|---|---|
+| deepseek-v4.1-flash（RAGAS） | ~330k | 750k | ~45% |
+| qwen3.8-max（生成） | ~130k | 900k | ~14% |
+| qwen3.8-flash（改写/路由/充分性） | ~100k | 980k | ~10% |
+
+**最大风险是 `MAX_RETRIES = 3`**：失败会整轮重跑，一次重试即 +330k。
+建议全量前先降到 1。低风险校准路径：`--difficulty easy`（6 题，约 100k）。

@@ -5,17 +5,22 @@
 消除 6 处法条解析重复实现与 1 处分层倒置；全程以**可复现的行为基线**证明重构零行为变化。
 
 ## 当前阶段
-全部阶段已完成（0/1/2/3/4）。详见 `progress.md` 会话 2、会话 3。
+**全部阶段（0/1/2/3/4）已完成**，复选框已按实际落地情况勾选。
+详见 `progress.md`：会话 2、3（目录重构）、会话 4（RAGAS 评估）、会话 5（git 事故抢救 + 死代码清理 + 结构守卫）。
+
+> 重构之后的收尾工作（不在本计划范围内，见 `progress.md` 会话 4/5）：
+> ① `routes.py` 拆分；② HF_HOME 集中到 config 模块体；③ 7 个模块的重依赖导入位置修正；
+> ④ 删除 3 处死代码（`sparse.py` / `EvalRunner.METRICS` / `_N1ChatModel`）；⑤ 补两条结构守卫；⑥ git 仓库抢救。
 
 ---
 
 ## 各阶段
 
 ### 阶段 0：建立验证网（行为基线）
-- [ ] 建 `backend/scripts/smoke_import.py`：遍历 `app/**/*.py` 逐个 `importlib.import_module`，报告失败模块 + traceback
-- [ ] 建 `backend/scripts/retrieval_baseline.py`：离线检索 harness（零 LLM、确定性、可消融），输出 P@1/P@3/P@5/R@5/MRR/MAP
-- [ ] 跑通并生成 `backend/baselines/pre_refactor.json`
-- [ ] 把基线数字记入 `findings.md`
+- [x] 建 `backend/scripts/smoke_import.py`：遍历 `app/**/*.py` 逐个 `importlib.import_module`，报告失败模块 + traceback
+- [x] 建 `backend/scripts/retrieval_baseline.py`：离线检索 harness（零 LLM、确定性、可消融），输出 P@1/P@3/P@5/R@5/MRR/MAP
+- [x] 跑通并生成 `backend/baselines/pre_refactor.json`
+- [x] 把基线数字记入 `findings.md`
 - **状态：** ✅ complete（2026-09-16 会话 2）
 
 **为什么必须先做**：现有 15 个单测只覆盖 `calculators / retrieval_metrics / text_splitter` 三个模块；
@@ -27,18 +32,18 @@
 
 **环境事实（已侦察，避免重复踩坑）**：
 - 必须用 `D:\Anaconda\envs\RAG\python.exe`；base 环境 torch DLL 已损坏（`c10.dll` WinError 1114）
-- 模型已缓存：`bge-m3` 6.5GB、`bge-reranker-v2-m3` 2.2GB（`~/.cache/huggingface`）
+- 模型已缓存：`bge-m3` 6.5GB、`bge-reranker-v2-m3` 2.2GB（**`D:/hf_cache`**；由 `app/core/config.py` 的模块体设 `HF_HOME`，必须早于 `huggingface_hub` 导入才生效）
 - 向量库已构建：`D:/LaborRAG_data/vector_store/{index.faiss,parent_store.json,bm25_index.json,sparse_index.json}`
 - 必须在 `backend/` 目录下运行（`settings` 的 `env_file=".env"` 相对 CWD 解析）
 
 ---
 
 ### 阶段 1：目录重构（纯移动，零逻辑改动）
-- [ ] 按下方映射表 `git mv` 全部文件
-- [ ] 按"Import 重写映射"批量重写 import
-- [ ] 处理 4 个路径陷阱（见下）
-- [ ] 删除全部过期 `__pycache__`
-- [ ] 验证：`smoke_import` 通过 + `pytest` 15 用例全绿 + baseline 数字**逐项完全一致**
+- [x] 按下方映射表 `git mv` 全部文件
+- [x] 按"Import 重写映射"批量重写 import
+- [x] 处理 4 个路径陷阱（见下）
+- [x] 删除全部过期 `__pycache__`
+- [x] 验证：`smoke_import` 通过 + `pytest` 15 用例全绿 + baseline 数字**逐项完全一致**
 - **状态：** ✅ complete（2026-09-16 会话 3，用户确认执行）—— 49 文件 git mv，225 处 import 替换，4 个路径陷阱全部按本计划预判处理
 
 **原则：只移动文件 + 重写 import，不改任何一行业务逻辑。** 唯一例外是下面 4 个路径陷阱。
@@ -136,15 +141,15 @@
 ---
 
 ### 阶段 2：消除重复实现
-- [ ] 新建 `app/utils/law_ref.py`，统一以下 6 处实现：
+- [x] 新建 `app/utils/law_ref.py`，统一以下 6 处实现：
   - 中文数字 ↔ 阿拉伯数字（`vectorstore._int_to_cn`、`retrieval_metrics._cn_to_int`、`law_graph._CN_NUM`/`_ARABIC_TO_CN`）
   - 法条编号正则（`text_splitter.ARTICLE_PATTERN`、`vectorstore._ARTICLE_REF_PATTERN`、`helpers.normalize_article`）
   - 法律名 ↔ 文件名映射（`vectorstore._LAW_NAME_MAP`、`law_graph._LAW_SOURCE_MAP`）
   - 查询法条引用提取（`vectorstore.extract_article_ref`）
-- [ ] 新建 `app/utils/files.py`：`file_lock` + 原子写
-- [ ] `app/knowledge/store.py` 改为依赖 `app/utils/files.py`（**修分层倒置**：核心存储层当前反向 import 评估层）
-- [ ] 改造 6 处调用点，删除旧实现
-- [ ] 新增 `tests/test_utils/test_law_ref.py`：含 **1–999 中文数字往返属性测试**
+- [x] 新建 `app/utils/files.py`：`file_lock` + 原子写
+- [x] `app/knowledge/store.py` 改为依赖 `app/utils/files.py`（**修分层倒置**：核心存储层当前反向 import 评估层）
+- [x] 改造 6 处调用点，删除旧实现
+- [x] 新增 `tests/test_utils/test_law_ref.py`：含 **1–999 中文数字往返属性测试**
 - **状态：** ✅ complete（4/5 项完成；法律名映射判定不应合并，往返测试判定不应做）
 
 **验收标准**：测试全绿 + baseline 数字不变 + 新增往返测试覆盖 1–999。
@@ -154,12 +159,12 @@
 ---
 
 ### 阶段 3：拆分大文件
-- [ ] `app/retrieval/domain_boost.py`（671 行，其中约 500 行是常量表）拆为：
+- [x] `app/retrieval/domain_boost.py`（671 行，其中约 500 行是常量表）拆为：
   - `app/knowledge_graph/law_relations.py` — `LAW_GRAPH` 纯数据
   - `app/knowledge_graph/concept_map.py` — `CONCEPT_ARTICLE_MAP` 纯数据
   - `app/knowledge_graph/lookup.py` — `_load_parent_store` / `_exact_lookup_from_parent_store` / `get_related_articles` / `concept_lookup` / `_extract_law_article_from_doc`
   - `app/retrieval/domain_boost.py` — 只留 `inject_related_articles`（变薄）
-- [ ] `app/api/routes.py`（348 行）拆为 `routes/{chat,knowledge,evaluation}.py` + `api/deps.py`
+- [x] `app/api/routes.py`（348 行）拆为 `routes/{chat,knowledge,evaluation}.py` + `api/deps.py`
 - **状态：** ✅ complete（`law_graph.py` 已拆为包 + 门面；`routes.py` 拆分未做）
 - **验收标准**：测试全绿 + baseline 数字不变
 
@@ -258,3 +263,25 @@
    文件名」，`law_graph._LAW_SOURCE_MAP` 是「文件名 → 规范法律名」，**方向相反**。
   强行合并会引入猜测。判定：不合并，但两者都属"数据表"，已各自归位。
 - **阶段 1（目录搬家）**：建议缓做（理由见阶段 1 状态）。
+
+
+---
+
+## 实际落地与计划的差异（2026-09-20 补记）
+
+计划是**预判**，实施中出现了几处偏离。记录下来，避免后人对着计划找不存在的文件：
+
+| 计划写的 | 实际落地的 | 原因 |
+|---|---|---|
+| `app/core/generator/` 作为 Agent 层根 | **`app/agent/`** | 按能力分层，`generator` 这个名字过窄 |
+| `app/utils/law_ref.py`（单数） | **`app/utils/law_refs.py`** | 内含「法条引用」多个概念（正则/数字/归一化） |
+| `app/utils/helpers.py` | 收敛到 **`app/utils/text.py`** + `law_refs.py` | 通用原语应放最底层，且按主题分文件 |
+| `app/agent/calculators.py` | **`app/tools/labor_calculator.py`** | 计算器是自含领域工具，独立成层 |
+| `tests/test_utils/test_law_ref.py` | **`tests/test_law_numbering.py`** | 测试目录保持扁平（15 个文件，无需再分层） |
+| `routes/{chat,knowledge,evaluation}.py` | 同，**外加 `deps.py` / `auth.py`** | 引擎单例与鉴权被三个子路由共享，必须独立 |
+
+**计划未预判、实施中新增的问题**（详见 `progress.md`）：
+
+- 阶段 1 搬家引入了 **2 个包级循环依赖**（复核时发现并修掉）
+- 阶段 3 之后又拆了 `law_graph.py`（数据/逻辑分离）与 `evaluation/`（按职责分目录）
+- 导入期副作用（`import app.main` 31s → 1.18s）是计划里没提的独立问题

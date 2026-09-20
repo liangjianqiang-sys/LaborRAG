@@ -79,26 +79,67 @@ rewrite_query → classify_complexity
        └─ compare_path → retrieve_for_compare → compare → validate → END
 ```
 
-### 6. 目标目录结构
+### 6. 实际落地的目录结构（2026-09-20）
+
+> 下面是**实施后**的结构，与本节最初的提案（`app/core/generator/`）不同 ——
+> 落地时按「能力分层」而非「技术类型」组织，最终归入 `app/agent/`，
+> 且 `helpers` 的内容收敛到了 `app/utils/`（跨层通用原语应放最底层）。
 
 ```
-app/core/generator/
-├── __init__.py
-├── state.py              # AgentState TypedDict
-├── constants.py          # 关键词集合、数字映射、计算常量
-├── prompts.py            # 所有Prompt模板（已有，补充移入）
-├── guardrails.py         # 护栏（已有）
-├── helpers.py            # 纯函数：_format_docs, _normalize_article, _strip_unsolicited_sections
-├── calculators.py        # 计算器引擎：LABOR_CALCULATORS + auto_calculate + 辅助函数
-├── nodes/
-│   ├── __init__.py
-│   ├── classify.py       # classify_complexity, decide_after_classify
-│   ├── rewrite.py        # rewrite_query
-│   ├── router.py         # route_intent, decide_intent
-│   ├── retrieve.py       # retrieve_docs, retrieve_for_compare
-│   ├── generate.py       # simple_generate, generate_from_retrieval
-│   ├── calculate.py      # calculate
-│   ├── compare.py        # compare
-│   └── validate.py       # validate
-└── graph.py              # 编排器：_build_graph + run + __init__（< 100行）
+app/
+├── core/            config.py  logging.py                     最底层（配置、日志）
+├── schemas/         chat.py                                   API DTO
+├── utils/           law_refs.py  files.py  text.py            零依赖原语
+├── knowledge/       loader.py  splitter.py  embeddings.py  store.py
+├── retrieval/       base / vector / bm25 / hybrid / reranked / query_enhance
+│                    domain_boost/  law_graph/  __init__.py（门面）
+├── memory/          conversation.py
+├── tools/           labor_calculator.py                       自含计算常量
+├── agent/           graph.py  state.py  prompts.py  guardrails.py  constants.py
+│   └── nodes/       classify  rewrite  router  retrieve
+│                    generate  calculate  compare  validate
+├── services/        rag_engine.py
+├── evaluation/      datasets/  metrics/  runner.py  persistent.py
+│                    report.py  utils.py
+└── api/             routes.py（仅聚合）  deps.py  auth.py
+                     chat.py  knowledge.py  evaluation.py
 ```
+
+**分层规则（有 `tests/test_layering.py` 用 AST 扫描兜底，含函数内延迟导入）：**
+
+```
+core / schemas / utils  →  knowledge / retrieval / memory / tools
+                        →  agent  →  services  →  evaluation  →  api
+```
+
+`app/main.py` 是唯一入口，允许依赖任意层。
+
+#### 6.1 api 层的拆分（2026-09-17）
+
+`routes.py` 原本 12814B，拆为「聚合器 + 三个子路由 + 共享 deps」：
+
+| 文件 | 职责 |
+|---|---|
+| `routes.py` | **仅聚合**（679B）：把三个子路由 include 进一个 router |
+| `deps.py` | 引擎单例引用 + `SUPPORTED_EXT` + `require_engine` |
+| `auth.py` | `verify_bearer`（`AUTH_SECRET` 留空则直接放行） |
+| `chat.py` | `/chat` |
+| `knowledge.py` | `/knowledge-base/*`、`/documents/*` |
+| `evaluation.py` | `/evaluation/*` |
+
+**两条容易踩的约定：**
+
+1. **鉴权必须挂在每个子路由上。** `include_router` **不会**让子路由继承聚合器的
+   `dependencies`，所以三个子路由各自声明
+   `APIRouter(dependencies=[Depends(verify_bearer)])`。
+   漏挂新子路由 = 静默鉴权绕过 → 由 `tests/test_api_auth_wiring.py` 结构守卫兜底。
+2. **引擎必须用模块属性访问** `deps.engine`，不能
+   `from app.api.deps import engine` 后读本地名 —— 后者是 import 时的快照，
+   lifespan 注入 / 测试 monkeypatch 替换引擎时不会跟着变。
+
+**端点清单（22 个，拆分前后逐条核对无增减）：**
+`/health`（挂在 `app` 上，免鉴权）、`/api/v1/chat`、
+`/api/v1/knowledge-base/{status,build}`、`/api/v1/documents/{list,upload,{filename}}`、
+`/api/v1/evaluation/{status,report,bad-cases,observability,run}`、
+`/api/v1/evaluation/persistent/{create,start,resume,restart,retry-failed,force-stop,progress,tasks,report,delete}`
+

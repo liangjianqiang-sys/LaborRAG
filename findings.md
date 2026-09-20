@@ -90,7 +90,7 @@ HITL `interrupt()`、`Store` 长期记忆、AG-UI 协议、内容审核、语音
 | Python（不可用） | base `D:\Anaconda\python.exe` — `import torch` 报 WinError 1114，`c10.dll` 加载失败 |
 | torch | 2.11.0+cpu，import 耗时 4.5s |
 | sentence_transformers | import 耗时 31.8s（冷启动正常） |
-| 模型缓存 | `~/.cache/huggingface/hub/`：`bge-m3` 6.5GB、`bge-reranker-v2-m3` 2.2GB、`bert-base-chinese` 393MB |
+| 模型缓存 | **`D:/hf_cache/hub/`**（2026-09-20 起，由 `config.py` 模块体设 `HF_HOME`）：`bge-m3` ~6.5GB、`bge-reranker-v2-m3` ~2.2GB、`bert-base-chinese` ~0.4GB。**已不在 `~/.cache/huggingface`** —— 该目录是清理软件的常见目标，实测被整体清空过一次（丢约 8GB），表现为启动时静默重新下载 |
 | 向量库 | `D:/LaborRAG_data/vector_store/`：`index.faiss` 5.1MB、`parent_store.json` 528KB、`bm25_index.json` 1.07MB、`sparse_index.json` 1.72MB |
 | 缺失依赖（base 环境） | `ragas` 未安装 → 完整 RAGAS 评估在 base 环境跑不了 |
 | 运行前提 | 必须在 `backend/` 下执行（`settings` 的 `env_file=".env"` 相对 CWD） |
@@ -142,6 +142,37 @@ HITL `interrupt()`、`Store` 长期记忆、AG-UI 协议、内容审核、语音
 | base 环境 torch DLL 损坏 | 改用 conda `RAG` 环境 |
 | `Get-Content` 读 UTF-8 中文 JSON 乱码 | 用 Python `json.load(f, encoding='utf-8')` |
 | base 环境缺 `ragas` | 完整 RAGAS 评估必须用 `RAG` 环境 |
+
+### 静默缺陷清单（2026-09-17 ~ 09-20 追加）
+
+**共同特征：不报错、不抛异常，只是悄悄丢数据或走错分支。** 这也是为什么
+「pytest 全绿」不能作为验收依据 —— 下面每一条在修复前测试都是绿的。
+
+| # | 缺陷 | 形态 | 怎么发现的 |
+|---|------|------|-----------|
+| 9 | 复杂度分类只看改写结果 | 改写剥掉口语标记 → 分类降级为 medium | 真实 LLM 跑通后对比 |
+| 10 | 聚合检索指标缺 5 项 | 只输出 2 个指标，其余算了没带出来 | 实现与 docstring 对照 |
+| 11 | RAGAS 按模型名判断是否关思考 | 非 qwen 模型 → 98% 输出 token 是思考 | 读 `runner.py` 时发现 |
+| 12 | 对比路径用改写结果做概念提取 | 连接词被剥掉 → 退化成单查询检索 | 日志里一行「对比概念提取失败」 |
+| 13 | CLI 硬编码错误指标键名 | `P@1` vs `precision@1` → 检索指标永远显示 N/A | 评估输出 N/A 但 Phase 2 明明算出来了 |
+| 14 | 幻觉护栏贪婪正则 | 删幻觉时把前面整段正确内容一起吞掉 | 盲区扫描：validate 零测试 |
+| 15 | 修 14 时自己引入的换行塌陷 | `if s.strip()` 吃掉 markdown 段落空行 | **端到端打印真实响应才看到** |
+| 16 | 关键词表顺序导致短词遮蔽长词 | 「工伤认定」排在「工伤认定时限」前 → 命错法条 | 客观扫描：O(n²) 查子串遮蔽 |
+
+**Bug 14/15 的教训**：单测证明「删除范围正确」，但坏掉的是「拼接方式」——
+**修 A 引入 B 是规则型修复的常见形态，修完之后必须再验一次副作用。**
+Bug 15 只在护栏触发时发生（未触发直接返回原答案），所以是隐形的。
+
+### 环境坑（2026-09-20 追加，都实际踩过）
+
+| 坑 | 表现 | 对策 |
+|---|---|---|
+| `HF_HOME` 设晚了 | 不报错，模型照旧下到 C 盘 `.cache`（被清理软件清空过） | 必须写在 `config.py` **模块体**（`huggingface_hub` 在 import 时固化该路径） |
+| Git Bash 转换反斜杠 | heredoc 里 `\n` → `/n`、`\\` → `//`，导致正则「莫名不匹配」 | 写正则/路径**不用反斜杠**，改用 `chr(10)` 或逐行处理 |
+| `tar` 把 `D:/x` 当远程主机 | `Cannot connect to D: resolve failed` | 用 POSIX 路径 `/d/x` |
+| 本机 `http_proxy` 拦本地请求 | 打 `127.0.0.1:8000` 返回 **502**，像「服务挂了」 | `build_opener(ProxyHandler({}))` 绕过 |
+| 后台 uvicorn 脱离 shell | 包装进程退出后**进程仍存活**占端口 | `netstat -ano \| grep :8000` 找 PID 再结束 |
+| `.git` 会被移进回收站 | git 报「不是仓库」 | 见 `progress.md` 会话 5 的完整修复记录 |
 
 ## 资源
 - [agent-service-toolkit](https://github.com/JoshuaC215/agent-service-toolkit)
