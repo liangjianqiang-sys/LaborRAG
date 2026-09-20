@@ -21,14 +21,21 @@ import os
 import pytest
 
 from app.evaluation import persistent as P
+from app.evaluation import persistent_store as PS
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    """把三个存储目录重定向到临时目录。"""
-    monkeypatch.setattr(P, "_TASKS_DIR", str(tmp_path / "tasks"))
-    monkeypatch.setattr(P, "_RESULTS_DIR", str(tmp_path / "results"))
-    monkeypatch.setattr(P, "_REPORTS_DIR", str(tmp_path / "reports"))
+    """把三个存储目录重定向到临时目录。
+
+    ⚠️ 必须 patch **存储层模块**（`persistent_store`）的属性。
+    `persistent.py` 里对 `_TASKS_DIR` 的引用走的是 `store._TASKS_DIR`
+    模块属性访问 —— 若哪天有人改成 `from persistent_store import _TASKS_DIR`，
+    这里就 patch 不到了，`test_存储层与调用方共用同一份目录常量` 会变红。
+    """
+    monkeypatch.setattr(PS, "_TASKS_DIR", str(tmp_path / "tasks"))
+    monkeypatch.setattr(PS, "_RESULTS_DIR", str(tmp_path / "results"))
+    monkeypatch.setattr(PS, "_REPORTS_DIR", str(tmp_path / "reports"))
     return tmp_path
 
 
@@ -76,7 +83,7 @@ def test_保存时非有限浮点被清洗成合法_JSON(store):
     续评时整条结果链会断在这里。
     """
     P.save_task(_task(score=float("nan"), other=float("inf")))
-    raw = open(P._task_path("eval_20260920_120000"), encoding="utf-8").read()
+    raw = open(PS._task_path("eval_20260920_120000"), encoding="utf-8").read()
     json.loads(raw)  # 不抛 → 合法 JSON
     assert "NaN" not in raw and "Infinity" not in raw
 
@@ -102,7 +109,7 @@ def test_损坏行被跳过_其余仍可读(store):
     否则「断点续评」在真实崩溃场景下就是失效的。
     """
     P._append_result("t1", {"index": 0})
-    with open(P._results_path("t1"), "a", encoding="utf-8") as f:
+    with open(PS._results_path("t1"), "a", encoding="utf-8") as f:
         f.write('{"index": 1, "broken": ')  # 半行
     P._append_result("t1", {"index": 2})
     got = P._load_results("t1")
@@ -126,9 +133,9 @@ def test_清理不存在的任务不报错(store):
 def test_load_all_tasks_跳过非_json与损坏文件(store):
     P.save_task(_task("good1"))
     P.save_task(_task("good2"))
-    os.makedirs(P._TASKS_DIR, exist_ok=True)
-    open(os.path.join(P._TASKS_DIR, "readme.txt"), "w").write("x")       # 非 json
-    open(os.path.join(P._TASKS_DIR, "broken.json"), "w").write("{坏")     # 损坏
+    os.makedirs(PS._TASKS_DIR, exist_ok=True)
+    open(os.path.join(PS._TASKS_DIR, "readme.txt"), "w").write("x")       # 非 json
+    open(os.path.join(PS._TASKS_DIR, "broken.json"), "w").write("{坏")     # 损坏
     ids = {t["task_id"] for t in P.load_all_tasks()}
     assert ids == {"good1", "good2"}, ids
 
@@ -151,6 +158,21 @@ def test_进度摘要_总数为零时不除零(store):
 
 def test_进度摘要_任务不存在时返回_error(store):
     assert "error" in P.PersistentEvalManager(None).get_task_progress("不存在")
+
+
+def test_存储层与调用方共用同一份目录常量(store):
+    """守住「常量必须走模块属性访问」这条约定。
+
+    拆分后 `persistent.py` 与 `persistent_store.py` 都能看到这三个常量。
+    如果 `persistent.py` 写成 `from app.evaluation.persistent_store import _TASKS_DIR`，
+    它就拿到一个 **import 时的快照** —— 测试 patch 了 `persistent_store._TASKS_DIR`
+    之后，存储函数写进临时目录，而 `persistent.list_tasks()` 仍去读**真实目录**。
+    那种情况下本用例会失败（读到真实目录里的任务，或一个都读不到）。
+    """
+    P.save_task(_task("only_here"))
+    assert {t["task_id"] for t in P.load_all_tasks()} == {"only_here"}
+    # list_tasks 走的是 persistent.py 里的 os.listdir(store._TASKS_DIR)
+    assert {t["task_id"] for t in P.PersistentEvalManager(None).list_tasks()} == {"only_here"}
 
 
 # ── 任务状态机（_check_task）────────────────────────────────────
