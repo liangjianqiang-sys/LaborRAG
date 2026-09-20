@@ -9,17 +9,7 @@ import json
 import os
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, Dict, Any, List
-from datasets import Dataset
-from ragas import evaluate, RunConfig
-from ragas.metrics import (
-    faithfulness,
-    context_precision,
-    context_recall,
-)
-from langchain_core.language_models import BaseChatModel
-from langchain_core.outputs import ChatResult
-from langchain_core.messages import BaseMessage
+from typing import Dict, Any, List
 from app.evaluation.datasets.golden_set import EVAL_DATASET
 from app.evaluation.metrics.retrieval import (
     compute_retrieval_metrics,
@@ -54,49 +44,9 @@ def _mean_scores(df, skip_extra=frozenset()) -> Dict[str, float]:
     return scores
 
 
-if TYPE_CHECKING:
-    # 仅在 _N1ChatModel 的字段注解里出现。langchain_openai 顶层导入实测约 17s
-    # （连带 transformers + torch），而本模块被 routes 延迟导入、只在触发评估时
-    # 才加载 —— 不该让「打开评估页」也付这个代价。
-    # 另注：pydantic v2 不会在类创建时求值字符串注解（已实测），故此处安全。
-    from langchain_openai import ChatOpenAI
-
-
-class _N1ChatModel(BaseChatModel):
-    """包装ChatOpenAI，强制n=1以兼容不支持n>1的API（如Qwen/DeepSeek）。
-
-    RAGAS的answer_relevancy指标内部会请求n=3次生成，但国内LLM API通常只支持n=1。
-    此wrapper拦截generate调用，将n强制设为1，避免BadRequestError。
-    """
-
-    base: "ChatOpenAI"
-
-    model_config = {"arbitrary_types_allowed": True}
-
-    @property
-    def _llm_type(self) -> str:
-        return f"n1-wrapper({self.base._llm_type})"
-
-    def _generate(
-        self,
-        messages: list[BaseMessage],
-        stop: list[str] | None = None,
-        run_manager=None,
-        **kwargs,
-    ) -> ChatResult:
-        # 强制n=1，兼容不支持多次生成的API
-        kwargs.pop('n', None)
-        return self.base._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
-
-    @property
-    def model_name(self) -> str:
-        return getattr(self.base, 'model_name', '')
-
-
 class EvalRunner:
     """评估执行器，对RAG系统进行三元组量化评估。"""
 
-    METRICS = [faithfulness, context_precision, context_recall]  # 双轨：child→Precision/Recall，parent→Faithfulness
     MAX_RETRIES = 3  # RAGAS评分最大重试次数
 
     def __init__(self, rag_engine):
@@ -125,9 +75,12 @@ class EvalRunner:
             request_timeout=180,
             extra_body={"enable_thinking": False},
         )
-        # RAGAS 0.4.3: 直接传ChatOpenAI，不再用_N1ChatModel包装
-        # 原因：RAGAS内部用LangchainLLMWrapper调用agenerate_prompt，
-        # _N1ChatModel只覆写同步_generate，异步调用会失败
+        # RAGAS 0.4.3: 直接传 ChatOpenAI，不做 n=1 包装。
+        # 原因：RAGAS 内部用 LangchainLLMWrapper 调 agenerate_prompt，而 n=1
+        # 包装器只覆写同步 _generate，异步调用会失败。当前 metrics 不含
+        # answer_relevancy（唯一会请求 n>1 的指标），故无需包装。
+        # 历史：曾有一个 `_N1ChatModel(BaseChatModel)` 实现，已随死代码清理删除；
+        # 它同时是「模块级 import BaseChatModel」的唯一原因，而那次导入实测 15s。
         # 当前metrics不含answer_relevancy（不需要n>1），无需n=1包装
         self.ragas_llm = base_llm
         self.ragas_embeddings = get_embeddings()
@@ -358,6 +311,13 @@ class EvalRunner:
         - Faithfulness用parent_contexts（完整法条，LLM基于此生成）
         - Context Precision/Recall用child_contexts（精准段落，反映检索器真实命中）
         """
+        # 重依赖一律在函数内导入：datasets / ragas 顶层导入会连带 torch（实测该模块
+        # 顶层导入约 48s）。本模块只有 api/evaluation.py 一个引用方且本就是延迟导入，
+        # 但保持规则无例外，守卫测试才能用「零豁免」的形态（见 tests/test_heavy_imports.py）。
+        from datasets import Dataset
+        from ragas import evaluate, RunConfig
+        from ragas.metrics import faithfulness, context_precision, context_recall
+
         # Faithfulness数据集：用父块contexts
         ds_faith = Dataset.from_dict({
             "question": questions, "answer": answers,
