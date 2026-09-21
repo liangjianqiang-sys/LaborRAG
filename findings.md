@@ -187,3 +187,63 @@ Bug 15 只在护栏触发时发生（未触发直接返回原答案），所以�
 ---
 *每执行 2 次查看/浏览器/搜索操作后更新此文件*
 *外部内容只写本文件，不写 task_plan.md*
+
+
+---
+
+## Context Recall 0.5667 的归因分析（2026-09-21）
+
+### 问题
+
+smoke（5 题）的 RAGAS `context_recall = 0.5667` 偏低。这需要判断：
+**是 golden set 标注的问题，还是检索的问题？** 两者在论文里的写法完全不同 ——
+前者要写「评估集偏差」，后者要写「已知局限」。
+
+### 方法：三个口径互相对照（零 LLM 成本）
+
+数据源：`evaluation_reports/cache/answers_smoke_after_refactor_*.json`
+（上次 smoke 的真实答案 + 父块上下文 + ground_truth）。
+
+| 口径 | 结果 | 怎么测的 |
+|---|---|---|
+| 法条引用层面 | **78.6%** | ground_truth 引用的 14 条法条，11 条出现在检索上下文里 |
+| 内容词覆盖 | **91.2%** | jieba 分词后逐句比对内容词（排除停用词） |
+| RAGAS context_recall | **56.67%** | 上次评估报告 |
+
+### 结论
+
+**检索上下文里确实包含 ground_truth 的内容**（91% 的内容词都在，
+法条层面 78.6% 覆盖）——所以低分**主要不是「检索没检到」，也不是标注与语料不符**。
+
+### 已确认的真缺陷（Bug 20）：对比题只评估一半证据
+
+```
+retrieve_for_compare  →  {"context_docs": docs_a, "context_docs_b": docs_b}
+rag_engine.py:157     →  relevant_docs = result["context_docs"]      ← 只取 A 组
+                        sources / full_contexts / child_contexts 全部由它派生
+```
+
+后果：
+
+- 对比题的**检索指标**只统计 A 组（B 组的命中不计入）
+- 对比题的 **RAGAS faithfulness / context_precision / context_recall 也只看到 A 组**，
+  而答案是 A+B 两组共同生成的 —— 来自 B 组的正确主张会被判为「上下文中无依据」，
+  于是 **faithfulness 被低估、幻觉率被高估**
+- Golden Set 20 题中有 3 题是对比类（15%）
+
+**修与不修都会改变论文里已有的数字，因此先记录、由作者决定。**
+
+### 91% vs 57% 的剩余差距
+
+现有数据无法定位 —— 评估报告只存了**逐题 faithfulness**，没存逐题 context_recall。
+可能的原因（按可能性排序）：
+
+1. **判分模型偏严**（RAGAS 槽 = `deepseek-v4.1-flash`）—— 要求上下文**显式陈述**
+   该断言，而不仅是包含相同词汇
+2. **RAGAS 用的是 child contexts**，而本次分析用的是 parent contexts（前者是后者的切分）；
+   实际 child contexts 未被缓存，无法核对
+3. 其他口径问题
+
+**低成本定位手段**：只跑 `context_recall` 一项、只用这 5 题的缓存数据
+→ 约 **5 次 LLM 调用 / ~20k token**（对比全量 smoke 约 200 次调用、13 分钟）。
+这是能给出逐题分数、直接回答「标注 vs 检索」的最小实验。
