@@ -24,6 +24,14 @@ logger = get_logger(__name__)
 # 注解写成字符串，避免运行时求值 RAGEngine。
 rag_engine: "RAGEngine | None" = None
 
+# 启动期失败原因（None = 正常启动）。
+#
+# 为什么需要它：引擎初始化失败时服务**仍会启动**（降级模式），
+# 此时所有业务端点返回 503。如果只暴露 `knowledge_base_ready: false`，
+# 调用方无法区分「知识库为空，去构建一下」和「模型缓存缺失，服务实际不可用」——
+# 这两种情况的操作完全不同。所以必须把原因带出来，否则就是静默降级。
+_startup_error: "str | None" = None
+
 
 def _preload_eval_models():
     """预加载评估相关模型，避免首次评估时等待下载。"""
@@ -90,12 +98,44 @@ async def lifespan(app: FastAPI):
     # 只有真正启动服务时才需要
     from app.services.rag_engine import RAGEngine
 
-    global rag_engine
-    rag_engine = RAGEngine()
-    rag_engine.initialize()
+    # ── 启动期容错（2026-09-28 新增）──────────────────────────────
+    # 改前：这里的异常会冒泡出 lifespan，uvicorn 直接启动失败 —— 表现为
+    # 「服务起不来」，而失败原因（模型缓存缺失 / FAISS 索引损坏）**在运行时是可恢复的**：
+    # 重新下载模型、或调 /knowledge-base/build 重建知识库即可。
+    # 起不来则连 /health 都访问不到，用户只看到一段栈回溯，没有任何恢复入口。
+    #
+    # 而本项目**本来就设计好了「未就绪」状态**：`engine.is_ready`、
+    # `api/deps.require_engine()` 的 503、前端的「构建知识库」按钮。
+    # 启动期异常让这个状态永远无法到达 —— 所以这里不是新增模式，是补齐既有设计。
+    #
+    # 权衡说明：fail-fast 也有价值（宁可起不来，也别对外服务一个检索全空的系统）。
+    # 这里选择降级启动，**代价是必须把失败原因暴露出来**（见 /health 的 startup_error
+    # 与下面的 ERROR 日志），否则就变成静默降级 —— 那比 fail-fast 更糟。
+    global rag_engine, _startup_error
+    try:
+        rag_engine = RAGEngine()
+        if not rag_engine.initialize():
+            # initialize 返回 False = 知识库为空（不是异常）。引擎对象仍可用，
+            # 只是 is_ready=False，端点返回 503 提示先构建知识库。
+            _startup_error = "知识库为空，请先构建知识库"
+            logger.warning(f"[启动] {_startup_error}")
+    except Exception as e:
+        _startup_error = f"{type(e).__name__}: {e}"
+        logger.error(
+            f"[启动] RAG 引擎初始化失败，服务以**降级模式**启动：{_startup_error}",
+            exc_info=True,
+        )
+        logger.error(
+            "[启动] 服务已启动但检索不可用，所有业务端点将返回 503。"
+            "常见原因与恢复：① 模型缓存缺失/损坏 → 检查 HF_HOME 指向的目录"
+            "（默认 D:/hf_cache）并重新下载；② 向量库索引损坏 → 调 "
+            "POST /api/v1/knowledge-base/build 重建。"
+        )
+        rag_engine = None
     set_engine(rag_engine)
 
-    logger.info("RAG引擎初始化完成")
+    if rag_engine is not None:
+        logger.info("RAG引擎初始化完成")
 
     # 将上次未完成的评估任务标记为paused（不自动恢复，需手动续评）
     from app.utils.files import file_lock
@@ -190,7 +230,20 @@ app.add_middleware(
 # 供容器 / 负载均衡 / 监控做健康检查（探活请求通常无法携带业务凭证）。
 @app.get("/health", tags=["health"])
 async def health_check():
-    """健康检查：免鉴权，返回服务与知识库状态。"""
+    """健康检查：免鉴权，返回服务与知识库状态。
+
+    两个状态是**分开**的，不要混用：
+
+    - `status` = **存活**（liveness）：进程活着、能响应 HTTP。
+      启动期引擎初始化失败时它**仍然是 "ok"** —— 因为进程确实活着，
+      把它改成 "degraded" 会让负载均衡直接摘掉实例，
+      连查看 `startup_error` 的机会都没有。
+    - `knowledge_base_ready` = **就绪**（readiness）：检索是否可用。
+      为 false 时所有业务端点返回 503。
+    - `startup_error` = 未就绪的原因（正常启动为 null）。
+      区分「知识库为空 → 去构建」和「模型加载失败 → 去修环境」，
+      这两者的操作完全不同。
+    """
     try:
         kb_ready = rag_engine.is_ready
     except Exception:
@@ -200,6 +253,7 @@ async def health_check():
         "version": settings.VERSION,
         "auth_enabled": bool(settings.AUTH_SECRET),
         "knowledge_base_ready": kb_ready,
+        "startup_error": _startup_error,
     }
 
 

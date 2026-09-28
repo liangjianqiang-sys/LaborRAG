@@ -85,10 +85,24 @@ class RAGEngine:
         if settings.RETRIEVER_TYPE in ("hybrid", "reranked") and not self.bm25_retriever.is_ready():
             self._build_bm25_index()
 
-        # 预加载Reranker模型，避免首次提问/评估时卡顿
-        self._preload_reranker()
-        # 触发加载评估专用Reranker（只加载一次，线程安全）
-        _ = self.eval_retriever
+        # 可选增强：预加载 Reranker / 构造评估检索器，避免首次提问或评估时卡顿。
+        #
+        # 两者都是**可选**的 —— 失败只影响首次调用的延迟或评估精度，
+        # 不该让一个知识库完好的引擎启动失败（2026-09-28 改）。
+        # 注意 `build_reranked_retriever` 只构造对象、**不加载** CrossEncoder 模型
+        # （模型在首次 retrieve() 时经模块级单例懒加载），所以这里通常不会失败；
+        # 真正会失败的是 `_preload_reranker()`（仅 RETRIEVER_TYPE=reranked 时生效）。
+        for label, step in (
+            ("Reranker 预加载", self._preload_reranker),
+            ("评估检索器构造", lambda: self.eval_retriever),
+        ):
+            try:
+                step()
+            except Exception as e:
+                logger.warning(
+                    f"   [启动] {label} 失败（不影响主链路，将在首次使用时重试）："
+                    f"{type(e).__name__}: {e}"
+                )
 
         return True
 

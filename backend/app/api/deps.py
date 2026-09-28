@@ -26,8 +26,13 @@ SUPPORTED_EXT = {".pdf", ".docx", ".txt", ".md"}
 engine: "RAGEngine | None" = None
 
 
-def set_engine(rag_engine: "RAGEngine") -> None:
-    """注入 RAG 引擎实例。"""
+def set_engine(rag_engine: "RAGEngine | None") -> None:
+    """注入 RAG 引擎实例。
+
+    允许传 None：启动期引擎初始化失败时，`main.py` 的 lifespan 会以
+    `set_engine(None)` 让服务以**降级模式**启动（而不是直接起不来），
+    此后所有业务端点经 `require_engine()` 返回 503。
+    """
     global engine
     engine = rag_engine
 
