@@ -18,6 +18,12 @@ def _get_reranker_singleton():
     if _reranker_instance is None:
         with _reranker_lock:
             if _reranker_instance is None:
+                # 原生 DLL 加载顺序：必须先加载 pyarrow，否则 sentence_transformers
+                # 的导入链会在 pyarrow.lib 处访问违规（段错误，无 traceback）。
+                # 复现命令与 faulthandler 栈见 app/utils/dll_order.py 的 docstring。
+                from app.utils.dll_order import ensure_native_dll_order
+                ensure_native_dll_order()
+
                 from sentence_transformers import CrossEncoder
                 # HF_HOME / HF_ENDPOINT 已在 app/core/config.py 模块体里设置好
                 # （必须早于 huggingface_hub 导入，此处再设已经晚了），见该文件顶部。

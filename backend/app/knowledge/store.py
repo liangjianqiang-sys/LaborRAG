@@ -103,6 +103,12 @@ class VectorStoreManager:
 
     def __init__(self):
         # 惰性导入：langchain_text_splitters 顶层导入约 40s，只有实例化时才需要
+        # 原生 DLL 加载顺序：必须先加载 pyarrow，否则 sentence_transformers
+        # 的导入链会在 pyarrow.lib 处访问违规（段错误，无 traceback）。
+        # 复现命令与 faulthandler 栈见 app/utils/dll_order.py 的 docstring。
+        from app.utils.dll_order import ensure_native_dll_order
+        ensure_native_dll_order()
+
         from langchain_text_splitters import RecursiveCharacterTextSplitter
 
         self.embeddings = get_embeddings()
