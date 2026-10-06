@@ -23,6 +23,56 @@ from app.agent.prompts import ANSWER_STYLE_RULES
 logger = get_logger(__name__)
 
 
+
+def _merge_context_docs(result: dict) -> list:
+    """把 Agent 工作流返回的检索结果合并成**评估用的**上下文列表。
+
+    为什么需要它（Bug 20，2026-10-06）
+    ----------------------------------
+    对比题走 `retrieve_for_compare`，它返回**两组**文档：
+
+        {"context_docs": docs_a, "context_docs_b": docs_b}
+
+    而 `compare` 节点把 **两组都**喂进 prompt 生成答案。但此前这里只取
+    `result["context_docs"]`，于是 `sources` / `full_contexts` / `child_contexts`
+    全都只包含 A 组 —— **评估只看到答案所依据的一半证据**。
+
+    实测后果（20 题全量评估）：
+    - 对比题的检索指标被严重低估（R@5 实测 0.4444，其他类型 0.88）
+    - 对比题的 `context_precision` 为 **0.0**：参考答案覆盖两个概念，
+      而评估只喂 A 组上下文，被判为"检索到的都不相关"
+    - 整体 R@5 因此被拖低约 5 个百分点
+
+    去重
+    ----
+    A/B 两组可能命中同一篇法条（两组检索的查询词不同但可能重叠）。
+    不去重会让同一篇文档在 `sources` 与 RAGAS 的 contexts 里出现两次，
+    既虚增参考来源，也会让 P@k 被同一篇文章占掉两个位次。
+    按 (source, page_content) 去重，**保留首次出现的位次**（A 组在前）。
+
+    非对比题
+    --------
+    `context_docs_b` 不存在 → `.get(..., [])` → 行为与改前完全一致。
+    """
+    merged = list(result.get("context_docs") or [])
+    merged.extend(result.get("context_docs_b") or [])
+
+    seen, deduped = set(), []
+    for item in merged:
+        try:
+            doc, _score = item
+            key = (doc.metadata.get("source"), doc.page_content)
+        except (TypeError, ValueError, AttributeError):
+            # 结构异常时原样保留，不因去重逻辑丢掉内容
+            deduped.append(item)
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 class RAGEngine:
     """RAG引擎，整合检索和生成，对外提供统一接口。
 
@@ -168,7 +218,7 @@ class RAGEngine:
                 if use_reranker:
                     self.agent_graph.retriever = orig_retriever
             answer = result["answer"]
-            relevant_docs = result["context_docs"]
+            relevant_docs = _merge_context_docs(result)
             rag_steps = result.get("steps", [])
             # 注意：agent_graph.run() 同时返回 intent 与 rewritten_question（agent_graph.py:152-153），
             # 这里必须取 rewritten_question —— 曾误取 intent，导致前端「改写后的问题」
