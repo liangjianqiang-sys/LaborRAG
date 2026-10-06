@@ -27,6 +27,7 @@ compare 整类都是异常低点。逐题探测证实：**B 组里装着 A 组�
 3. 两组重叠时要**去重**，否则同一篇法条会占掉两个位次、虚增参考来源
 """
 import asyncio
+import pathlib
 import types
 
 import pytest
@@ -183,3 +184,100 @@ def test_chat_非对比题不引入多余上下文(engine):
     })
     assert len(resp.full_contexts) == 1
     assert "只有一组" in resp.full_contexts[0]
+
+
+# ── 契约守卫：run() 的返回键必须覆盖 chat() 读取的键 ──────────────
+#
+# 这条用例是补上「第一版修复为什么没生效」的教训：
+#
+# `AgenticRAGGraph.run()` 返回的是**固定键的 dict**。我最初只改了
+# `rag_engine.chat()` 让它合并 `context_docs_b`，但 `run()` 根本没返回这个键
+# → `result.get("context_docs_b")` 永远是 None → 修复静默失效。
+#
+# 而当时的测试没抓到：stub 的 `agent_graph.run()` **直接返回了** `context_docs_b`，
+# 绕过了真正丢字段的那一层。**stub 打得太高，就没覆盖住出问题的那一层。**
+#
+# 这里改用源码级契约检查：把 `run()` 返回 dict 的键集合，与 `chat()` 里所有
+# `result[...]` / `result.get(...)` 的键集合做包含关系断言。加键/删键都会被发现。
+
+
+def _run_return_keys(src: str):
+    import ast
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run":
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Return) and isinstance(sub.value, ast.Dict):
+                    return {k.value for k in sub.value.keys if isinstance(k, ast.Constant)}
+    return set()
+
+
+def _chat_result_keys(src: str):
+    """扫 `chat()` **以及它调用的 `_merge_context_docs`** 读取的 `result` 键。
+
+    ⚠️ 必须带上 helper：合并逻辑搬进 `_merge_context_docs` 之后，
+    `context_docs` / `context_docs_b` 的读取就不在 `chat()` 里了 ——
+    只扫 `chat()` 会漏掉这两个（守卫会假绿）。
+    """
+    import ast
+    tree = ast.parse(src)
+    keys = set()
+    for node in ast.walk(tree):
+        is_target = (
+            (isinstance(node, ast.AsyncFunctionDef) and node.name == "chat")
+            or (isinstance(node, ast.FunctionDef) and node.name == "_merge_context_docs")
+        )
+        if is_target:
+            for sub in ast.walk(node):
+                # result.get("X")
+                if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                        and sub.func.attr == "get" and isinstance(sub.func.value, ast.Name)
+                        and sub.func.value.id == "result"
+                        and sub.args and isinstance(sub.args[0], ast.Constant)):
+                    keys.add(sub.args[0].value)
+                # result["X"]
+                if (isinstance(sub, ast.Subscript) and isinstance(sub.value, ast.Name)
+                        and sub.value.id == "result" and isinstance(sub.slice, ast.Constant)):
+                    keys.add(sub.slice.value)
+    return keys
+
+
+def test_graph_run_返回的键覆盖_rag_engine_chat_读取的键():
+    """`run()` 返回的是固定键 dict —— 漏一个键就是**静默**丢数据。
+
+    Bug 20 的第一版修复正是死在这里：`context_docs_b` 没在 `run()` 的返回里，
+    `chat()` 拿到 None，修复毫无效果且不报错。
+    """
+    base = pathlib.Path(__file__).resolve().parent.parent / "app"
+    provided = _run_return_keys((base / "agent" / "graph.py").read_text(encoding="utf-8"))
+    consumed = _chat_result_keys((base / "services" / "rag_engine.py").read_text(encoding="utf-8"))
+
+    assert provided, "没解析到 run() 的返回键 —— 契约守卫失效"
+    assert consumed, "没解析到 chat() 读取的键 —— 契约守卫失效"
+    missing = consumed - provided
+    assert not missing, (
+        f"`chat()` 读取了 run() 没有返回的键：{sorted(missing)} —— "
+        f"这些会被静默丢掉（`.get()` 返回 None 不报错）。"
+        f"\n  run() 提供：{sorted(provided)}"
+        f"\n  chat() 需要：{sorted(consumed)}"
+    )
+
+
+def test_契约守卫确实能发现漏键(monkeypatch):
+    """非空性检查：构造一个「run() 少返回一个键」的源码，守卫必须报出来。"""
+    fake_graph = """
+class G:
+    async def run(self):
+        return {"answer": "", "context_docs": []}
+"""
+    fake_engine = """
+class E:
+    async def chat(self):
+        result = {}
+        _ = result.get("context_docs_b", [])
+        _ = result["answer"]
+"""
+    provided = _run_return_keys(fake_graph)
+    consumed = _chat_result_keys(fake_engine)
+    assert "context_docs_b" in consumed, "非空性检查失败：没解析到 chat() 的键"
+    assert consumed - provided == {"context_docs_b"}, f"守卫没能发现漏键：{consumed - provided}"

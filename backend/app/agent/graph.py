@@ -153,6 +153,21 @@ class AgenticRAGGraph:
         return {
             "answer": answer,
             "context_docs": result.get("context_docs", []),
+            # 对比题的 B 组文档（2026-10-06 补，Bug 20）。
+            #
+            # `retrieve_for_compare` 返回 A/B 两组，`compare` 节点把**两组都**喂进
+            # prompt 生成答案。但这个 return 是**固定键的 dict** —— 此前漏了
+            # `context_docs_b`，于是 `rag_engine.chat()` 里
+            # `result.get("context_docs_b")` 永远拿到 None，
+            # 导致 `sources` / `full_contexts` / `child_contexts` 只含 A 组：
+            # **评估只看到答案所依据的一半证据**。
+            #
+            # 实测后果：对比题的 R@5 只有 0.4444（其他类型 0.88）、
+            # `context_precision` 为 0.0。
+            #
+            # ⚠️ 这里加键时注意：`chat()` 依赖的**每一个**键都必须出现在本 dict 里，
+            # 否则会被静默丢弃（`.get()` 返回 None 不报错）。有专门用例守住。
+            "context_docs_b": result.get("context_docs_b", []),
             "steps": result.get("steps", []),
             "intent": result.get("intent", ""),
             "rewritten_question": result.get("rewritten_question", ""),
