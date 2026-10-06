@@ -47,7 +47,22 @@ def _mean_scores(df, skip_extra=frozenset()) -> Dict[str, float]:
 class EvalRunner:
     """评估执行器，对RAG系统进行三元组量化评估。"""
 
-    MAX_RETRIES = 3  # RAGAS评分最大重试次数
+    # RAGAS 阶段的最大重试次数（**不是**单次 LLM 调用的重试）。
+    #
+    # 2026-10-06 由 3 改为 1。理由：
+    #
+    # ① 成功路径完全不受影响 —— 成功时 `return` 在 try 块内，第一次就返回，
+    #    MAX_RETRIES=1 与 =3 都是「只跑一次」。
+    # ② 这个重试是**整轮重跑整个 Phase 3**（两个 evaluate() 全跑一遍），
+    #    而不是只重试失败的那一项。按 20 题估算，一次重跑 ≈ 330k token；
+    #    配 30s/60s 退避，失败时要多烧 3 倍额度 + 90 秒等待。
+    # ③ 它能拦住的失败（配额耗尽、模型 400）**重试也没用**；而真正的瞬时故障
+    #    （网络抖动、限流）已由内层 `RunConfig(max_retries=3, max_wait=300)`
+    #    兜住 —— 改这里不影响那一层保护。
+    #
+    # 全失败时返回空结果 `{}, {}, []`，报告里 RAGAS 三项缺失；但 Phase 1/2
+    # 的答案与检索指标已由 `_save_cache` 落盘，不会白跑，手动重跑即可。
+    MAX_RETRIES = 1
 
     def __init__(self, rag_engine):
         self.rag_engine = rag_engine
