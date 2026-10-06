@@ -6,6 +6,7 @@
   - triad.answer_relevancy:   答案相关性（端到端）
 """
 import json
+import math
 import os
 import time
 from datetime import datetime
@@ -316,7 +317,11 @@ class EvalRunner:
             # RAGAS指标
             if scores:
                 diff_faith = [details[i].get("faithfulness") for i in idxs]
-                diff_faith_vals = [v for v in diff_faith if v is not None]
+                # 排除 None 与 NaN —— 上面已把 NaN 归一为 None，这里再兜一层
+                diff_faith_vals = [
+                    v for v in diff_faith
+                    if v is not None and not (isinstance(v, float) and math.isnan(v))
+                ]
                 difficulty_scores[diff] = {
                     "faithfulness": round(sum(diff_faith_vals) / len(diff_faith_vals), 4) if diff_faith_vals else None,
                     "count": len(idxs),
@@ -371,7 +376,12 @@ class EvalRunner:
             try:
                 print(f"[Phase 3] Computing RAGAS metrics (attempt {attempt}/{self.MAX_RETRIES})...")
                 run_config = RunConfig(
-                    timeout=180,
+                    # 180 → 300（2026-10-06）：20 题评估里稳定出现 3 次
+                    # TimeoutError（Job 8/36/38），且都恰好卡在 180s ——
+                    # 判分模型换成 pro 档后单次调用更慢，180s 余量不够。
+                    # 超时的题 RAGAS 会填 NaN，虽已被归一为 None（不再污染均值），
+                    # 但该题指标仍会缺失，所以放宽超时以减少缺失。
+                    timeout=300,
                     max_retries=3,
                     max_wait=300,
                     max_workers=4,
@@ -415,8 +425,15 @@ class EvalRunner:
                 faithfulness_per_query = []
                 if "faithfulness" in faith_df.columns:
                     for val in faith_df["faithfulness"]:
+                        # ⚠️ 必须把 NaN 也归一成 None（2026-10-06 修）。
+                        # RAGAS 对超时/失败的题会填 NaN，而 `float(nan)` 是**成功**的，
+                        # 于是 NaN 被当成有效值混进列表 —— 之后：
+                        #   · 幻觉率均值被污染成 NaN（落盘后变 null，整项指标作废）
+                        #   · 按难度分组的 faithfulness 均值同样被污染
+                        # 只捕异常是拦不住 NaN 的，必须显式判断。
                         try:
-                            faithfulness_per_query.append(float(val))
+                            v = float(val)
+                            faithfulness_per_query.append(None if math.isnan(v) else v)
                         except (TypeError, ValueError):
                             faithfulness_per_query.append(None)
 

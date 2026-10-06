@@ -20,6 +20,7 @@
           └── {task_id}_report.json      # 汇总统计报告
 """
 import json
+import math
 import os
 import uuid
 import time
@@ -583,7 +584,12 @@ class PersistentEvalManager:
         for attempt in range(1, eval_runner.MAX_RETRIES + 1):
             try:
                 run_config = RunConfig(
-                    timeout=180,
+                    # 180 → 300（2026-10-06）：20 题评估里稳定出现 3 次
+                    # TimeoutError（Job 8/36/38），且都恰好卡在 180s ——
+                    # 判分模型换成 pro 档后单次调用更慢，180s 余量不够。
+                    # 超时的题 RAGAS 会填 NaN，虽已被归一为 None（不再污染均值），
+                    # 但该题指标仍会缺失，所以放宽超时以减少缺失。
+                    timeout=300,
                     max_retries=3,
                     max_wait=300,
                     max_workers=4,
@@ -603,8 +609,12 @@ class PersistentEvalManager:
                 # 提取每题faithfulness
                 if "faithfulness" in result_df.columns:
                     for val in result_df["faithfulness"]:
+                        # ⚠️ NaN 也要归一成 None（2026-10-06 修）。
+                        # RAGAS 对超时/失败的题填 NaN，而 `float(nan)` 是**成功**的
+                        # → NaN 混进列表 → 幻觉率与分组均值被污染成 NaN（落盘后变 null，整项作废）。
                         try:
-                            faithfulness_per_query.append(float(val))
+                            v = float(val)
+                            faithfulness_per_query.append(None if math.isnan(v) else v)
                         except (TypeError, ValueError):
                             faithfulness_per_query.append(None)
                 break

@@ -245,7 +245,13 @@ def compute_response_metrics(
     # 计算均值
     metrics = {"per_query": per_query}
     for key in ["hallucination_rate", "completeness"]:
-        values = [pq[key] for pq in per_query if key in pq]
+        # 只统计**有效数值**（2026-10-06 修）。此前写成 `if key in pq` ——
+        # 键在但值为 None 时也会被收进来，`sum([0.2, None])` 直接抛 TypeError；
+        # NaN 更隐蔽：不报错，但会把整项均值污染成 NaN，落盘变 null、整项作废。
+        values = [
+            v for pq in per_query
+            if (v := pq.get(key)) is not None and not (isinstance(v, float) and math.isnan(v))
+        ]
         if values:
             metrics[key] = round(sum(values) / len(values), 4)
 
