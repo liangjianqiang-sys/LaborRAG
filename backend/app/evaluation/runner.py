@@ -9,7 +9,7 @@ import json
 import os
 import time
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from app.evaluation.datasets.golden_set import EVAL_DATASET
 from app.evaluation.metrics.retrieval import (
     compute_retrieval_metrics,
@@ -162,69 +162,96 @@ class EvalRunner:
     def _execute(self, dataset: list, rag_mode_label: str) -> Dict[str, Any]:
         """三阶段执行核心逻辑。"""
 
-        # ── 阶段1：生成答案（token消耗60-70%，并发加速）──
         total = len(dataset)
         max_workers = settings.EVAL_MAX_CONCURRENT
-        print(f"[Phase 1] Generating answers on {total} samples (mode={rag_mode_label}, concurrent={max_workers})...")
+        expected_questions = [d["question"] for d in dataset]
 
-        gen_results = parallel_map(
-            self._gen_answer, dataset,
-            max_workers=max_workers, desc="Phase1",
-        )
+        # ── 阶段1：生成答案（token消耗60-70%，并发加速）──
+        # 先尝试复用上次的缓存（2026-10-06 补）。Phase 1 是 20 题里最贵的一段
+        # （约 230k token）；而 Phase 3 的 RAGAS 在内存紧张时容易崩 ——
+        # 崩了却因为缓存「只写不读」而必须重跑 Phase 1，等于白烧一次。
+        cached = self._load_cache(rag_mode_label, expected_questions)
+        if cached is not None:
+            print(f"[Phase 1] 命中缓存 {cached['_cache_file']}，**跳过生成**"
+                  f"（复用 {len(cached['questions'])} 题的答案与上下文，省约 230k token）")
+            questions = cached["questions"]
+            answers = cached["answers"]
+            contexts = cached["contexts"]
+            ground_truths = cached["ground_truths"]
+            child_contexts_list = cached["child_contexts"]
+            sources_raw = cached["sources_raw"]
+            details = cached["details"]
+            # 这两个可从 details 还原，无需单独入缓存
+            relevant_articles_list = [d.get("relevant_articles", []) for d in details]
+            question_types = [d.get("question_type", "retrieve") for d in details]
+            gen_results = None
+        else:
+            print(f"[Phase 1] Generating answers on {total} samples "
+                  f"(mode={rag_mode_label}, concurrent={max_workers})...")
 
-        # 按顺序收集成功结果，跳过失败题目
-        questions, answers, contexts, ground_truths = [], [], [], []
-        sources_raw: List[List[Dict]] = []
-        relevant_articles_list: List[List[str]] = []
-        question_types: List[str] = []
-        details = []
+            gen_results = parallel_map(
+                self._gen_answer, dataset,
+                max_workers=max_workers, desc="Phase1",
+            )
 
-        for i, result in enumerate(gen_results):
-            if result is None or isinstance(result, Exception):
-                # 失败题目用占位数据，保证索引对齐
-                item = dataset[i]
-                questions.append(item["question"])
-                answers.append("")
-                contexts.append([])
-                ground_truths.append(item["ground_truth"])
-                relevant_articles_list.append(item.get("relevant_articles", []))
-                question_types.append(item.get("question_type", "retrieve"))
-                sources_raw.append([])
+            # 按顺序收集成功结果，跳过失败题目
+            questions, answers, contexts, ground_truths = [], [], [], []
+            sources_raw: List[List[Dict]] = []
+            relevant_articles_list: List[List[str]] = []
+            question_types: List[str] = []
+            details = []
+            # 子块上下文：供 RAGAS 的 Context Precision/Recall（2026-10-06 起一并入缓存）
+            child_contexts_list: List[List[str]] = []
+
+            for i, result in enumerate(gen_results):
+                if result is None or isinstance(result, Exception):
+                    # 失败题目用占位数据，保证索引对齐
+                    item = dataset[i]
+                    questions.append(item["question"])
+                    answers.append("")
+                    contexts.append([])
+                    ground_truths.append(item["ground_truth"])
+                    relevant_articles_list.append(item.get("relevant_articles", []))
+                    question_types.append(item.get("question_type", "retrieve"))
+                    sources_raw.append([])
+                    child_contexts_list.append([])
+                    details.append({
+                        "question": item["question"],
+                        "question_type": item.get("question_type", "retrieve"),
+                        "difficulty": item.get("difficulty", ""),
+                        "test_dimension": item.get("test_dimension", ""),
+                        "eval_subset": item.get("eval_subset", ["full"]),
+                        "law": item.get("law", ""),
+                        "answer": "", "ground_truth": item["ground_truth"],
+                        "relevant_articles": item.get("relevant_articles", []),
+                        "source_count": 0, "rag_mode": rag_mode_label,
+                    })
+                    continue
+                questions.append(result["question"])
+                answers.append(result["answer"])
+                contexts.append(result["contexts"])
+                ground_truths.append(result["ground_truth"])
+                relevant_articles_list.append(result["relevant_articles"])
+                question_types.append(result["question_type"])
+                sources_raw.append(result["sources"])
+                child_contexts_list.append(result.get("child_contexts") or result["contexts"])
                 details.append({
-                    "question": item["question"],
-                    "question_type": item.get("question_type", "retrieve"),
-                    "difficulty": item.get("difficulty", ""),
-                    "test_dimension": item.get("test_dimension", ""),
-                    "eval_subset": item.get("eval_subset", ["full"]),
-                    "law": item.get("law", ""),
-                    "answer": "", "ground_truth": item["ground_truth"],
-                    "relevant_articles": item.get("relevant_articles", []),
-                    "source_count": 0, "rag_mode": rag_mode_label,
+                    "question": result["question"],
+                    "question_type": result["question_type"],
+                    "difficulty": result["difficulty"],
+                    "test_dimension": result["test_dimension"],
+                    "eval_subset": result["eval_subset"],
+                    "law": result["law"],
+                    "answer": result["answer"],
+                    "ground_truth": result["ground_truth"],
+                    "relevant_articles": result["relevant_articles"],
+                    "source_count": result["source_count"],
+                    "rag_mode": result["rag_mode"],
                 })
-                continue
-            questions.append(result["question"])
-            answers.append(result["answer"])
-            contexts.append(result["contexts"])
-            ground_truths.append(result["ground_truth"])
-            relevant_articles_list.append(result["relevant_articles"])
-            question_types.append(result["question_type"])
-            sources_raw.append(result["sources"])
-            details.append({
-                "question": result["question"],
-                "question_type": result["question_type"],
-                "difficulty": result["difficulty"],
-                "test_dimension": result["test_dimension"],
-                "eval_subset": result["eval_subset"],
-                "law": result["law"],
-                "answer": result["answer"],
-                "ground_truth": result["ground_truth"],
-                "relevant_articles": result["relevant_articles"],
-                "source_count": result["source_count"],
-                "rag_mode": result["rag_mode"],
-            })
 
-        # 立即保存中间结果，评分失败时可直接重试
-        self._save_cache(rag_mode_label, questions, answers, contexts, ground_truths, details)
+            # 立即保存中间结果，评分失败时可直接重试
+            self._save_cache(rag_mode_label, questions, answers, contexts, ground_truths, details,
+                            sources_raw=sources_raw, child_contexts=child_contexts_list)
         print(f"[Phase 1] Done. Answers cached. Safe to retry if scoring fails.")
 
         # ── 阶段2：检索指标计算（零LLM调用）──
@@ -241,14 +268,10 @@ class EvalRunner:
         print(f"[Phase 2] Done. retrieval={_summary(retrieval)}")
 
         # ── 阶段3：RAGAS双轨评分（token消耗30-40%，可重试）──
-        # 收集child_contexts（供Precision/Recall评估）
-        child_contexts_list = []
-        for i, result in enumerate(gen_results):
-            if result is None or isinstance(result, Exception):
-                child_contexts_list.append(contexts[i])  # fallback to parent
-            else:
-                child_contexts_list.append(result.get("child_contexts", contexts[i]))
-
+        # child_contexts 已在 Phase 1 一并收集（并随缓存落盘），此处不再重算。
+        # 2026-10-06 改：此前这里无条件 `for i, result in enumerate(gen_results)`，
+        # 一旦走缓存路径（gen_results 为 None）就会 TypeError；而且它收集的东西
+        # 与 Phase 1 完全重复。合并到 Phase 1 后两条路径共用同一份数据。
         scores, type_scores, faithfulness_per_query = self._score_with_retry(
             questions, answers, contexts, child_contexts_list, ground_truths, details
         )
@@ -408,8 +431,20 @@ class EvalRunner:
                     print(f"[Phase 3] All {self.MAX_RETRIES} attempts failed. Returning partial results.")
                     return {}, {}, []
 
-    def _save_cache(self, rag_mode_label, questions, answers, contexts, ground_truths, details):
-        """保存中间结果（答案生成后立即保存，评分失败可重试）。"""
+    def _save_cache(self, rag_mode_label, questions, answers, contexts, ground_truths, details,
+                    sources_raw=None, child_contexts=None):
+        """保存中间结果（答案生成后立即保存，评分失败可重试）。
+
+        `sources_raw` / `child_contexts` 是 2026-10-06 补的 —— 此前只存了
+        questions/answers/contexts/ground_truths/details，缺这两个就无法真正
+        跳过 Phase 1：
+
+        - `sources_raw` 供 Phase 2 算检索指标（`compute_retrieval_metrics`）
+        - `child_contexts` 供 RAGAS 的 Context Precision/Recall
+
+        缺它们的后果是 `_load_cache` 只能"读回一半数据"，Phase 1 还是得重跑 ——
+        而 Phase 1 正是 20 题里最贵的部分（约 230k token）。
+        """
         os.makedirs(_CACHE_DIR, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         cache_file = os.path.join(_CACHE_DIR, f"answers_{rag_mode_label}_{ts}.json")
@@ -419,12 +454,57 @@ class EvalRunner:
             "questions": questions,
             "answers": answers,
             "contexts": contexts,
+            "child_contexts": child_contexts or [],
             "ground_truths": ground_truths,
+            "sources_raw": sources_raw or [],
             "details": details,
         })
         with open(cache_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         print(f"  Cache saved: {cache_file}")
+
+    def _load_cache(self, rag_mode_label: str, expected_questions: List[str]) -> Optional[Dict[str, Any]]:
+        """按 label 找最近一份**题目完全一致**的缓存，命中则返回其内容，否则 None。
+
+        为什么要校验题目集
+        ------------------
+        缓存文件名只带 label 与时间戳，**不带筛选条件**。若上一次跑的是
+        `--difficulty easy`（6 题）、这次跑 `--subset full`（20 题），
+        直接复用就会把 6 题的答案当成 20 题的结果 —— 而且**不会报错**，
+        只会产出一份看起来正常的错报告。
+
+        所以这里要求 `questions` 列表**逐项完全相等**（含顺序）。不匹配就
+        当作没有缓存，老老实实重跑。
+
+        另外：2026-10-06 之前写的缓存没有 `sources_raw` / `child_contexts`，
+        无法真正跳过 Phase 1，这里一并视为无效（宁可重跑，也不要半吊子复用）。
+        """
+        if not os.path.isdir(_CACHE_DIR):
+            return None
+
+        prefix = f"answers_{rag_mode_label}_"
+        candidates = sorted(
+            (f for f in os.listdir(_CACHE_DIR) if f.startswith(prefix) and f.endswith(".json")),
+            reverse=True,   # 文件名含时间戳，倒序即最新优先
+        )
+        for name in candidates:
+            path = os.path.join(_CACHE_DIR, name)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, json.JSONDecodeError) as e:
+                print(f"  [cache] 跳过损坏文件 {name}: {e}")
+                continue
+
+            if data.get("questions") != expected_questions:
+                continue
+            if not data.get("sources_raw") or not data.get("child_contexts"):
+                print(f"  [cache] {name} 是旧格式（缺 sources_raw/child_contexts），不复用")
+                continue
+
+            data["_cache_file"] = name
+            return data
+        return None
 
 
 def _summary(metrics: Dict) -> str:
