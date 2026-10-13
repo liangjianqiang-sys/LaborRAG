@@ -71,3 +71,16 @@ Thumbs.db
 # 个人简历（与项目代码无关，不随仓库分发）
 docs/resume.md
 generate_resume_pdf.py
+
+# AI 工具工作流笔记（属本地会话产物，与项目代码无关）
+.devin/
+.claude/
+
+# 个人面试与学习材料（含项目弱点自剖，不公开分发）
+docs/面试备战方案.md
+docs/项目讲述稿.md
+docs/学习问答.md
+docs/理解路线图.md
+
+# 逐次运行的评估产物（仅 backend/baselines/ 的基线快照随仓库分发）
+evaluation_reports/
