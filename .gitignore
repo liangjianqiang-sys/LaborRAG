@@ -84,3 +84,8 @@ docs/理解路线图.md
 
 # 逐次运行的评估产物（仅 backend/baselines/ 的基线快照随仓库分发）
 evaluation_reports/
+
+# 开发过程笔记（本地保留，不随仓库分发）
+task_plan.md
+progress.md
+findings.md
