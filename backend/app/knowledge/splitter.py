@@ -7,7 +7,7 @@ from app.utils.law_refs import ARTICLE_REF_PATTERN
 
 
 def _new_recursive_splitter():
-    """构造固定长度切分器。
+    """构造递归字符切分器（按分隔符优先级递归切，非按字数硬切）。
 
     惰性导入：langchain_text_splitters 顶层导入约 40s，而只有 recursive 切分
     路径需要它。放在模块级会让所有 import app.knowledge.splitter 的代码
@@ -78,7 +78,6 @@ class LawArticleSplitter:
         lines = text.split("\n")
         articles: List[str] = []
         current_article: List[str] = []
-        current_article_num = ""
 
         for line in lines:
             stripped = line.strip()
@@ -90,7 +89,6 @@ class LawArticleSplitter:
                 if current_article:
                     articles.append("\n".join(current_article))
                     current_article = []
-                current_article_num = stripped[:stripped.index("条") + 1]
                 current_article.append(stripped)
             else:
                 current_article.append(stripped)
@@ -194,7 +192,6 @@ class LawArticleSplitter:
         lines = text.split("\n")
         articles: List[str] = []
         current_article: List[str] = []
-        current_article_num = ""
 
         for line in lines:
             stripped = line.strip()
@@ -206,7 +203,6 @@ class LawArticleSplitter:
                 if current_article:
                     articles.append("\n".join(current_article))
                     current_article = []
-                current_article_num = stripped[:stripped.index("条") + 1]
                 current_article.append(stripped)
             else:
                 current_article.append(stripped)
