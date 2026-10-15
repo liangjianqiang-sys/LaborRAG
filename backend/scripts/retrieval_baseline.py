@@ -215,12 +215,19 @@ def main() -> int:
         help="与一份历史基线比对，打印六个指标的 Δ 与 rank-1 变化题目",
     )
     parser.add_argument("--verbose", action="store_true", help="显示节点内部 [Agent] 日志")
+    parser.add_argument(
+        "--no-domain-boost",
+        action="store_true",
+        help="关闭领域规则库注入（伴生法条 + 概念映射置顶），用于消融对比",
+    )
     args = parser.parse_args()
 
     if args.retriever:
         settings.RETRIEVER_TYPE = args.retriever
     if args.top_k:
         settings.TOP_K = args.top_k
+    if args.no_domain_boost:
+        settings.DOMAIN_BOOST_ENABLED = False
 
     items = select_items(args.subset)
     if not items:
@@ -229,6 +236,7 @@ def main() -> int:
 
     print(f"检索器      : {settings.RETRIEVER_TYPE}")
     print(f"TOP_K       : {settings.TOP_K}")
+    print(f"领域规则库  : {'关闭（消融）' if not settings.DOMAIN_BOOST_ENABLED else '启用'}")
     print(f"向量库      : {settings.VECTOR_STORE_PATH}")
     print(f"题量        : {len(items)}（subset={args.subset}）")
     print("\n加载向量库与检索器（首次需加载 BGE-M3，请稍候）...")
@@ -259,11 +267,16 @@ def main() -> int:
                 "复杂度分类（纯规则）",
                 "向量 + BM25 + RRF 融合",
                 "父子分块提升",
-                "知识图谱伴生法条注入",
-                "概念映射提升/注入并置顶",
+                *(
+                    ["领域规则库伴生法条注入", "概念映射提升/注入并置顶"]
+                    if settings.DOMAIN_BOOST_ENABLED
+                    else []
+                ),
                 "截断与兜底",
             ],
             "not_covered": ["LLM 查询改写", "HyDE", "多查询扩展", "生成", "RAGAS"],
+            # 记录消融开关状态，使基线文件自解释（两份快照可直接对比）
+            "domain_boost_enabled": settings.DOMAIN_BOOST_ENABLED,
             "retriever": settings.RETRIEVER_TYPE,
             "top_k": settings.TOP_K,
             "score_threshold": settings.SCORE_THRESHOLD,

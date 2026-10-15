@@ -141,6 +141,15 @@ class Settings(BaseSettings):
     # 检索验证配置（两步生成开关）
     RETRIEVAL_VALIDATION: bool = True
 
+    # 领域规则库注入总开关（伴生法条注入 + 概念映射置顶）。
+    #
+    # 默认 True —— 它是 P@1 的主要来源（消融实测：关掉后 P@1 显著下降）。
+    # 存在的意义是**消融实验**：`scripts/retrieval_baseline.py --no-domain-boost`
+    # 会在同一套题上关闭它跑一次，从而把「概念注入带来多少提升」变成
+    # 同题集、单变量的受控对比，而不是跨题集的趋势比较。
+    # 生产环境请保持 True。
+    DOMAIN_BOOST_ENABLED: bool = True
+
     # 评估配置
     EVAL_MAX_CONCURRENT: int = 4
     EVAL_TASK_TIMEOUT: int = 1800

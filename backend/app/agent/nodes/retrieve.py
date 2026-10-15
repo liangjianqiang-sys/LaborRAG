@@ -72,52 +72,61 @@ async def retrieve_docs(retriever: BaseRetriever, grader_llm, state: AgentState)
 
     all_docs.sort(key=lambda x: x[1], reverse=True)
 
-    # ── 知识图谱注入 ──
-    from app.retrieval.domain_boost import inject_related_articles
-    all_docs = inject_related_articles(all_docs, retriever)
-
-    # ── 概念映射注入（同时用原始问题+改写问题匹配，确保口语词不丢失） ──
-    # 关键：概念注入的doc强制排在最前面（它们是规则匹配的高置信度结果），
-    # 不参与reranker分数排序竞争，避免被reranker低分淹没。
-    # 即使法条已在all_docs中（但排序靠后），也要提升到顶部。
-    from app.retrieval.domain_boost import concept_lookup, _extract_law_article_from_doc
-    original_question = state["question"]
-    concept_docs = concept_lookup(original_question + " " + question, k=4)
+    # ── 领域规则库注入：伴生法条 + 概念映射置顶 ──
+    #
+    # 可用 DOMAIN_BOOST_ENABLED 整体关闭，用于消融实验
+    # （`scripts/retrieval_baseline.py --no-domain-boost`）。生产保持 True。
     injected_docs: List[Tuple[Document, float]] = []
-    if concept_docs:
-        # 收集概念匹配的法条ID
-        concept_article_ids = set()
-        for doc, score in concept_docs:
-            result = _extract_law_article_from_doc(doc)
-            if result:
-                concept_article_ids.add(result)
+    if settings.DOMAIN_BOOST_ENABLED:
+        from app.retrieval.domain_boost import (
+            inject_related_articles,
+            concept_lookup,
+            _extract_law_article_from_doc,
+        )
 
-        # 从all_docs中提取概念匹配的doc（提升到顶部），未匹配的保留
-        remaining_docs: List[Tuple[Document, float]] = []
-        for doc, score in all_docs:
-            result = _extract_law_article_from_doc(doc)
-            if result and result in concept_article_ids:
-                doc.metadata["injected_by"] = "concept_promote"
-                injected_docs.append((doc, 0.95))
-                print(f"[Agent] 概念提升: {result[0]}第{result[1]}条")
-            else:
-                remaining_docs.append((doc, score))
+        # 伴生法条注入：命中某条法条时，把它法定的伴生法条一并拉进来
+        all_docs = inject_related_articles(all_docs, retriever)
 
-        # 概念匹配但不在all_docs中的新法条，也注入
-        existing_article_ids = set()
-        for doc, score in injected_docs:
-            result = _extract_law_article_from_doc(doc)
-            if result:
-                existing_article_ids.add(result)
-        for doc, score in concept_docs:
-            result = _extract_law_article_from_doc(doc)
-            if result and result not in existing_article_ids:
-                existing_article_ids.add(result)
-                doc.metadata["injected_by"] = "rule"
-                injected_docs.append((doc, 0.95))
-                print(f"[Agent] 概念注入: {result[0]}第{result[1]}条")
+        # ── 概念映射注入（同时用原始问题+改写问题匹配，确保口语词不丢失） ──
+        # 关键：概念注入的doc强制排在最前面（它们是规则匹配的高置信度结果），
+        # 不参与reranker分数排序竞争，避免被reranker低分淹没。
+        # 即使法条已在all_docs中（但排序靠后），也要提升到顶部。
+        original_question = state["question"]
+        concept_docs = concept_lookup(original_question + " " + question, k=4)
+        if concept_docs:
+            # 收集概念匹配的法条ID
+            concept_article_ids = set()
+            for doc, score in concept_docs:
+                result = _extract_law_article_from_doc(doc)
+                if result:
+                    concept_article_ids.add(result)
 
-        all_docs = remaining_docs
+            # 从all_docs中提取概念匹配的doc（提升到顶部），未匹配的保留
+            remaining_docs: List[Tuple[Document, float]] = []
+            for doc, score in all_docs:
+                result = _extract_law_article_from_doc(doc)
+                if result and result in concept_article_ids:
+                    doc.metadata["injected_by"] = "concept_promote"
+                    injected_docs.append((doc, 0.95))
+                    print(f"[Agent] 概念提升: {result[0]}第{result[1]}条")
+                else:
+                    remaining_docs.append((doc, score))
+
+            # 概念匹配但不在all_docs中的新法条，也注入
+            existing_article_ids = set()
+            for doc, score in injected_docs:
+                result = _extract_law_article_from_doc(doc)
+                if result:
+                    existing_article_ids.add(result)
+            for doc, score in concept_docs:
+                result = _extract_law_article_from_doc(doc)
+                if result and result not in existing_article_ids:
+                    existing_article_ids.add(result)
+                    doc.metadata["injected_by"] = "rule"
+                    injected_docs.append((doc, 0.95))
+                    print(f"[Agent] 概念注入: {result[0]}第{result[1]}条")
+
+            all_docs = remaining_docs
 
     # 截断普通文档（保留rerank_top_k个），概念注入doc不参与截断
     if len(all_docs) > rerank_top_k:

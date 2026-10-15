@@ -37,46 +37,49 @@ async def simple_generate(retriever: BaseRetriever, gen_llm: "ChatOpenAI", grade
             score_threshold=settings.SCORE_THRESHOLD,
         )
 
-    # ── 概念映射注入（与 retrieve_docs 相同逻辑，确保口语词不丢失） ──
+    # ── 领域规则库概念注入（与 retrieve_docs 相同逻辑，确保口语词不丢失） ──
     # 概念注入doc强制置顶，不参与reranker分数排序竞争。
     # 即使法条已在docs中（但排序靠后），也要提升到顶部。
-    from app.retrieval.domain_boost import concept_lookup, _extract_law_article_from_doc
-    concept_docs = concept_lookup(original_question + " " + question, k=4)
+    # 可用 DOMAIN_BOOST_ENABLED 关闭，用于消融实验（见 config.py 注释）。
     injected_docs = []
-    if concept_docs:
-        # 收集概念匹配的法条ID
-        concept_article_ids = set()
-        for doc, score in concept_docs:
-            result = _extract_law_article_from_doc(doc)
-            if result:
-                concept_article_ids.add(result)
+    if settings.DOMAIN_BOOST_ENABLED:
+        from app.retrieval.domain_boost import concept_lookup, _extract_law_article_from_doc
 
-        # 从docs中提取概念匹配的doc（提升到顶部），未匹配的保留
-        remaining_docs = []
-        for doc, score in docs:
-            result = _extract_law_article_from_doc(doc)
-            if result and result in concept_article_ids:
-                doc.metadata["injected_by"] = "concept_promote"
-                injected_docs.append((doc, 0.95))
-                print(f"[Agent] 概念提升(快速路径): {result[0]}第{result[1]}条")
-            else:
-                remaining_docs.append((doc, score))
+        concept_docs = concept_lookup(original_question + " " + question, k=4)
+        if concept_docs:
+            # 收集概念匹配的法条ID
+            concept_article_ids = set()
+            for doc, score in concept_docs:
+                result = _extract_law_article_from_doc(doc)
+                if result:
+                    concept_article_ids.add(result)
 
-        # 概念匹配但不在docs中的新法条，也注入
-        existing_article_ids = set()
-        for doc, score in injected_docs:
-            result = _extract_law_article_from_doc(doc)
-            if result:
-                existing_article_ids.add(result)
-        for doc, score in concept_docs:
-            result = _extract_law_article_from_doc(doc)
-            if result and result not in existing_article_ids:
-                existing_article_ids.add(result)
-                doc.metadata["injected_by"] = "rule"
-                injected_docs.append((doc, 0.95))
-                print(f"[Agent] 概念注入(快速路径): {result[0]}第{result[1]}条")
+            # 从docs中提取概念匹配的doc（提升到顶部），未匹配的保留
+            remaining_docs = []
+            for doc, score in docs:
+                result = _extract_law_article_from_doc(doc)
+                if result and result in concept_article_ids:
+                    doc.metadata["injected_by"] = "concept_promote"
+                    injected_docs.append((doc, 0.95))
+                    print(f"[Agent] 概念提升(快速路径): {result[0]}第{result[1]}条")
+                else:
+                    remaining_docs.append((doc, score))
 
-        docs = remaining_docs
+            # 概念匹配但不在docs中的新法条，也注入
+            existing_article_ids = set()
+            for doc, score in injected_docs:
+                result = _extract_law_article_from_doc(doc)
+                if result:
+                    existing_article_ids.add(result)
+            for doc, score in concept_docs:
+                result = _extract_law_article_from_doc(doc)
+                if result and result not in existing_article_ids:
+                    existing_article_ids.add(result)
+                    doc.metadata["injected_by"] = "rule"
+                    injected_docs.append((doc, 0.95))
+                    print(f"[Agent] 概念注入(快速路径): {result[0]}第{result[1]}条")
+
+            docs = remaining_docs
 
     if injected_docs:
         docs = injected_docs + docs
