@@ -1,6 +1,7 @@
 import traceback
 import uuid
 import threading
+from typing import AsyncIterator
 
 from app.core.config import settings
 from app.core.errors import (
@@ -19,6 +20,8 @@ from app.memory.conversation import conversation_manager
 from app.schemas.chat import ChatRequest, ChatResponse, SourceDocument, MessageRole
 from langchain_core.prompts import ChatPromptTemplate
 from app.agent.prompts import ANSWER_STYLE_RULES
+from app.agent.guardrails import AnswerGuardrails
+from app.utils.text import strip_unsolicited_sections
 
 logger = get_logger(__name__)
 
@@ -71,6 +74,39 @@ def _merge_context_docs(result: dict) -> list:
         seen.add(key)
         deduped.append(item)
     return deduped
+
+
+# ── 流式输出：节点白名单 ──────────────────────────────────────
+#
+# 只有这些节点产出的是「答案」。其余节点同样会产生 token ——
+# 实测（scripts/check_streaming.py，一次完整 compare 链路）：
+#
+#     compare:        239 个 token 片段   ← 答案
+#     rewrite_query:   20 个 token 片段   ← 改写 JSON，不是答案
+#     route_intent:     1 个 token 片段   ← 意图词，不是答案
+#
+# 不过滤的话，前端会把「改写过程 / 意图判断」当成答案流出来。
+_ANSWER_NODES = frozenset({
+    "simple_generate",
+    "generate_from_retrieval",
+    "calculate",
+    "compare",
+})
+
+# 节点 → 前端展示文案（step 事件用）
+_NODE_LABELS = {
+    "rewrite_query": "查询改写",
+    "classify_complexity": "复杂度分类",
+    "route_intent": "意图路由",
+    "retrieve_docs": "检索法条",
+    "retrieve_for_calc": "检索法条（计算）",
+    "retrieve_for_compare": "检索法条（对比）",
+    "generate_from_retrieval": "生成回答",
+    "simple_generate": "生成回答",
+    "calculate": "金额计算",
+    "compare": "对比分析",
+    "validate": "法条校验",
+}
 
 
 class RAGEngine:
@@ -186,11 +222,13 @@ class RAGEngine:
 
         return chunk_count > 0
 
-    async def chat(self, request: ChatRequest, use_reranker: bool = False) -> ChatResponse:
-        """核心问答方法：Agentic RAG工作流，支持多轮对话。"""
-        conversation_id = request.conversation_id or str(uuid.uuid4())
+    def _prepare_context(self, request: ChatRequest) -> tuple[str, str]:
+        """登记用户消息并构建对话上下文，返回 (conversation_id, context)。
 
-        # 记录用户消息到对话历史
+        `chat()` 与 `chat_stream()` 共用 —— 两条路径的上下文构建必须一致，
+        否则流式与非流式的多轮表现会出现差异。
+        """
+        conversation_id = request.conversation_id or str(uuid.uuid4())
         conversation_manager.add_message(conversation_id, MessageRole.USER, request.question)
 
         # 获取对话上下文（优先后端持久化，兜底前端传来的history）
@@ -204,6 +242,11 @@ class RAGEngine:
                 elif msg.role == MessageRole.ASSISTANT:
                     lines.append(f"助手: {msg.content}")
             conversation_context = "\n".join(lines)
+        return conversation_id, conversation_context
+
+    async def chat(self, request: ChatRequest, use_reranker: bool = False) -> ChatResponse:
+        """核心问答方法：Agentic RAG工作流，支持多轮对话。"""
+        conversation_id, conversation_context = self._prepare_context(request)
 
         # Agentic RAG工作流
         result = {}  # 异常降级到 simple 时不走 result 赋值，兜底空 dict 避免 UnboundLocalError
@@ -217,13 +260,6 @@ class RAGEngine:
             finally:
                 if use_reranker:
                     self.agent_graph.retriever = orig_retriever
-            answer = result["answer"]
-            relevant_docs = _merge_context_docs(result)
-            rag_steps = result.get("steps", [])
-            # 注意：agent_graph.run() 同时返回 intent 与 rewritten_question（agent_graph.py:152-153），
-            # 这里必须取 rewritten_question —— 曾误取 intent，导致前端「改写后的问题」
-            # 一直显示 retrieve/calculate 这类意图值
-            rewritten_question = result.get("rewritten_question", "")
         except Exception as e:
             # 降级路径（SimpleChain）**同样要调 LLM**。所以当失败原因就是 LLM 不可用时，
             # 降级必然也失败 —— 直接归类上报，省掉一次注定失败、还要等超时的调用。
@@ -235,6 +271,13 @@ class RAGEngine:
             try:
                 answer, relevant_docs, rag_steps, rewritten_question = \
                     self._fallback_simple(request.question, f"Agent降级: {str(e)[:50]}")
+                # 归一成与主路径同构的 result，供 _build_chat_response 统一消费
+                result = {
+                    "answer": answer,
+                    "context_docs": relevant_docs,
+                    "steps": rag_steps,
+                    "rewritten_question": rewritten_question,
+                }
             except Exception as fallback_error:
                 # 降级也失败：原因是 LLM 不可用则同样归类上报（503），
                 # 否则原样抛出（那是真缺陷，应当暴露为 500 而不是被掩盖）
@@ -247,6 +290,24 @@ class RAGEngine:
                         llm_unavailable_message(fallback_error)
                     ) from fallback_error
                 raise
+
+        return self._build_chat_response(result, conversation_id, request)
+
+    def _build_chat_response(
+        self, result: dict, conversation_id: str, request: ChatRequest
+    ) -> ChatResponse:
+        """从工作流结果构建对外响应（来源 / 置信度 / 评估上下文）。
+
+        `chat()` 与 `chat_stream()` 共用 —— 两条路径的响应结构必须完全一致，
+        否则评估（走 `/chat`）与前端（走 `/chat/stream`）看到的证据会不同。
+        """
+        answer = result.get("answer", "")
+        relevant_docs = _merge_context_docs(result)
+        rag_steps = result.get("steps", [])
+        # 注意：agent_graph.run() 同时返回 intent 与 rewritten_question，
+        # 这里必须取 rewritten_question —— 曾误取 intent，导致前端「改写后的问题」
+        # 一直显示 retrieve/calculate 这类意图值
+        rewritten_question = result.get("rewritten_question", "")
 
         # 记录助手回答到对话历史
         conversation_manager.add_message(conversation_id, MessageRole.ASSISTANT, answer)
@@ -313,6 +374,93 @@ class RAGEngine:
             full_contexts=full_contexts,
             child_contexts=child_contexts,
         )
+
+    async def chat_stream(self, request: ChatRequest) -> AsyncIterator[dict]:
+        """流式问答：按事件产出，由 api 层序列化成 SSE。
+
+        事件形态（dict）：
+            {"event": "step",  "data": {"node": ..., "label": ...}}
+            {"event": "token", "data": {"text": ...}}
+            {"event": "done",  "data": <ChatResponse.model_dump()>}
+            {"event": "error", "data": {"message": ...}}
+
+        设计要点
+        --------
+        1. **token 按节点过滤** —— 见 `_ANSWER_NODES` 的说明。
+        2. **过程流式、结果统一** —— 流式只负责"过程"；最终的 sources /
+           confidence / contexts 仍走 `_build_chat_response`，保证 `/chat`（评估用）
+           与 `/chat/stream`（前端用）返回的响应结构完全一致。
+        3. **不降级重试** —— 与 `chat()` 不同，流式失败直接报 error 事件：
+           连接已经建立、token 可能已经吐出，此时再跑一次降级链路会让前端
+           收到两段拼接的答案。
+        """
+        conversation_id, conversation_context = self._prepare_context(request)
+
+        final_state: dict = {}
+        # 同一个节点会触发**多次** on_chain_start —— LangGraph 把节点包成多层
+        # RunnableSequence，每层都带同一个 `langgraph_node`。实测一次 compare
+        # 链路收到 11 个 step 而实际只有 6 个节点，前端进度条会出现连续重复。
+        # 按节点名去重；本项目工作流无环，同一节点不会真正执行两次。
+        emitted_nodes: set[str] = set()
+        try:
+            async for ev in self.agent_graph.graph.astream_events(
+                {
+                    "question": request.question,
+                    "conversation_context": conversation_context,
+                    "steps": [],
+                },
+                version="v2",
+            ):
+                kind = ev.get("event")
+                node = ev.get("metadata", {}).get("langgraph_node")
+
+                if (
+                    kind == "on_chain_start"
+                    and node in _NODE_LABELS
+                    and node not in emitted_nodes
+                ):
+                    emitted_nodes.add(node)
+                    yield {
+                        "event": "step",
+                        "data": {"node": node, "label": _NODE_LABELS[node]},
+                    }
+
+                elif kind == "on_chat_model_stream" and node in _ANSWER_NODES:
+                    chunk = ev.get("data", {}).get("chunk")
+                    text = getattr(chunk, "content", "") or ""
+                    if text:
+                        yield {"event": "token", "data": {"text": text}}
+
+                elif kind == "on_chain_end":
+                    output = ev.get("data", {}).get("output")
+                    # 顶层 chain 的 output 才是完整 state；用 "answer" 键判定，
+                    # 避免把中间节点的输出误当最终结果
+                    if isinstance(output, dict) and "answer" in output:
+                        final_state = output
+        except Exception as e:
+            if is_llm_unavailable(e):
+                logger.error(f"流式问答 LLM 不可用：{type(e).__name__}: {e}")
+                yield {"event": "error", "data": {"message": llm_unavailable_message(e)}}
+            else:
+                logger.error(f"流式问答失败：{type(e).__name__}: {e}", exc_info=True)
+                yield {"event": "error", "data": {"message": f"{type(e).__name__}: {e}"}}
+            return
+
+        # 流式拿到的是**未经收尾**的原始答案（护栏在 graph.run() 里做、没写回 state），
+        # 这里补上同样的收尾，否则前端流式看到的内容与 done 里的 answer 会不一致
+        final_state["answer"] = self._finalize_answer(
+            final_state.get("answer", ""), request.skip_guardrails
+        )
+        response = self._build_chat_response(final_state, conversation_id, request)
+        yield {"event": "done", "data": response.model_dump()}
+
+    @staticmethod
+    def _finalize_answer(answer: str, skip_guardrails: bool) -> str:
+        """与 `AgenticRAGGraph.run()` 的收尾保持一致（去多余段落 + 答案护栏）。"""
+        answer = strip_unsolicited_sections(answer)
+        if not skip_guardrails:
+            answer = AnswerGuardrails.check(answer)
+        return answer
 
     @property
     def eval_retriever(self):
