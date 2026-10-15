@@ -84,7 +84,12 @@ async def _calculate_via_tools(
 async def calculate(retriever: BaseRetriever, gen_llm: "ChatOpenAI", state: AgentState) -> dict:
     """Calculator Agent：检索法条 + 精确计算。"""
     print(f"[Agent] 🧮 计算Agent执行...")
-    question = state.get("rewritten_question") or state["question"]
+    # 与 classify_complexity / route_intent 同理：原始问题与改写结果取并集 ——
+    # 参数提取（无论工具调用还是正则兜底）都依赖问题里的**数字**，
+    # 而改写会把「月薪 8000」洗掉，只剩法言法语术语。
+    original = state["question"]
+    rewritten = state.get("rewritten_question") or original
+    question = rewritten if original == rewritten else f"{original} {rewritten}"
     conversation_context = state.get("conversation_context", "")
     docs = state.get("context_docs", [])
 

@@ -16,7 +16,17 @@ if TYPE_CHECKING:
 async def route_intent(grader_llm: "ChatOpenAI", state: AgentState) -> dict:
     """Router Agent：意图识别，决定分派给哪个专业Agent。"""
     print(f"[Agent] 🧭 路由意图识别...")
-    question = state.get("rewritten_question") or state["question"]
+
+    # 原始问题与改写结果**都要看**，取信号并集 —— 与 classify_complexity 同理。
+    #
+    # 只看改写结果会丢信号：改写为了「法言法语」会把**数字**洗掉。实测
+    # 「月薪 8000，被辞退了，能拿多少补偿？」被改写成
+    # 「用人单位单方解除劳动合同 经济补偿金 赔偿金」——「8000」没了，
+    # 于是路由无法判断"用户给了数字"，把本该走计算路径的问题判成 retrieve，
+    # **计算节点根本不被执行**，工具调用随之全部失效。
+    original = state["question"]
+    rewritten = state.get("rewritten_question") or original
+    question = rewritten if original == rewritten else f"{original} {rewritten}"
     conversation_context = state.get("conversation_context", "")
 
     prompt = ChatPromptTemplate.from_template(INTENT_ROUTER_PROMPT)
