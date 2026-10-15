@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Plus, MessageSquare, Trash2, PanelLeftClose, PanelLeft } from 'lucide-react'
-import type { Conversation } from '../hooks/useConversations'
+import type { Conversation } from '../hooks/ConversationContext'
 
 interface ConversationSidebarProps {
   conversations: Conversation[]

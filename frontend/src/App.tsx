@@ -4,6 +4,7 @@ import ChatPage from './pages/ChatPage'
 import KnowledgePage from './pages/KnowledgePage'
 import EvalPage from './pages/EvalPage'
 import SettingsPage from './pages/SettingsPage'
+import { ConversationProvider } from './hooks/ConversationContext'
 
 const navItems = [
   { to: '/', icon: MessageSquare, label: '问答' },
@@ -73,7 +74,11 @@ function AppContent() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AppContent />
+      {/* 对话状态挂在最外层：ChatPage 切换页面会被卸载，但 Provider 不会 ——
+          所以正在生成的回答既不会丢，切回来还能继续看到流式输出 */}
+      <ConversationProvider>
+        <AppContent />
+      </ConversationProvider>
     </BrowserRouter>
   )
 }

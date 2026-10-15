@@ -1,18 +1,18 @@
 import { useState, useEffect } from 'react'
 import ChatWindow from '../components/ChatWindow'
 import ConversationSidebar from '../components/ConversationSidebar'
-import { useConversations } from '../hooks/useConversations'
+import { useConversations } from '../hooks/ConversationContext'
 
 export default function ChatPage() {
   const {
     conversations,
     activeId,
     activeConversation,
+    isStreaming,
     createConversation,
     switchConversation,
     deleteConversation,
-    addMessage,
-    setBackendConversationId,
+    sendMessage,
   } = useConversations()
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -46,8 +46,8 @@ export default function ChatPage() {
         <ChatWindow
           key={activeId}
           conversation={activeConversation}
-          onAddMessage={addMessage}
-          onSetBackendConversationId={setBackendConversationId}
+          isStreaming={isStreaming}
+          onSend={sendMessage}
           onNewChat={handleNewChat}
         />
       </div>

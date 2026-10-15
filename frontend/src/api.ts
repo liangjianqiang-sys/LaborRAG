@@ -96,6 +96,79 @@ export async function sendChat(request: ChatRequest): Promise<ChatResponse> {
   return res.json()
 }
 
+// ── 流式问答（SSE）─────────────────────────────────────────────
+//
+// 后端 /chat/stream 推送四种事件：
+//   step  —— 节点进度（"查询改写" / "检索法条" / "生成回答" …）
+//   token —— 生成节点的增量文本
+//   done  —— 完整 ChatResponse（用收尾后的答案覆盖流式内容）
+//   error —— 失败原因
+
+export interface StreamHandlers {
+  onStep?: (label: string) => void
+  onToken?: (text: string) => void
+  onDone?: (res: ChatResponse) => void
+  onError?: (message: string) => void
+}
+
+/**
+ * 流式提问。
+ *
+ * 为什么用 fetch + ReadableStream 而不是 EventSource：
+ * EventSource 只支持 GET，而提问需要 POST 一个 JSON body
+ * （含 history 与 conversation_id）。
+ */
+export async function sendChatStream(
+  request: ChatRequest,
+  handlers: StreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await apiFetch('/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+    signal,
+  })
+  if (!res.ok) throw new Error(await readError(res, '请求失败'))
+  if (!res.body) throw new Error('当前浏览器不支持流式响应')
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    // SSE 以空行分隔事件；最后一段可能不完整，留在 buffer 等下一个 chunk
+    const frames = buffer.split('\n\n')
+    buffer = frames.pop() ?? ''
+
+    for (const frame of frames) {
+      let event = 'message'
+      const dataLines: string[] = []
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''))
+      }
+      if (dataLines.length === 0) continue
+
+      let payload: Record<string, unknown>
+      try {
+        payload = JSON.parse(dataLines.join('\n'))
+      } catch {
+        continue // 单帧解析失败不该中断整条流
+      }
+
+      if (event === 'step') handlers.onStep?.(String(payload.label ?? ''))
+      else if (event === 'token') handlers.onToken?.(String(payload.text ?? ''))
+      else if (event === 'done') handlers.onDone?.(payload as unknown as ChatResponse)
+      else if (event === 'error') handlers.onError?.(String(payload.message ?? '未知错误'))
+    }
+  }
+}
+
 export async function getKnowledgeBaseStatus(): Promise<KnowledgeBaseStatus> {
   const res = await apiFetch('/knowledge-base/status')
   if (!res.ok) throw new Error(await readError(res, '获取知识库状态失败'))
