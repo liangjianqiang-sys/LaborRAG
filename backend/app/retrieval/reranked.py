@@ -1,3 +1,4 @@
+import math
 import threading
 from typing import List, Tuple
 from langchain_core.documents import Document
@@ -122,8 +123,14 @@ class RerankedRetriever(BaseRetriever):
         for (doc, _old_score), rerank_score in scored_results[:effective_k]:
             if rerank_score < rerank_threshold:
                 continue
-            # 归一化到0-1用于展示（sigmoid映射，仅用于返回分数，不影响过滤）
-            normalized = 1.0 / (1.0 + max(0, -rerank_score))
+            # 归一化到 0-1 用于展示（真 sigmoid，仅用于返回分数，不影响过滤）。
+            #
+            # ⚠️ 历史 bug：此处曾写作 `1.0 / (1.0 + max(0, -rerank_score))`，注释却称
+            # 其为「sigmoid」—— 实为 hinge 式分段函数：x≥0 时 max(0, -x) 恒为 0，
+            # 于是**所有非负分都映射成 1.0**。因过滤阈值 RERANK_SCORE_THRESHOLD=0.3>0，
+            # 凡通过过滤的文档归一化后**一律是 1.0**，前端/评估展示的相关度彻底丢失区分度
+            # （排序与召回不受影响 —— 过滤用的是 CrossEncoder 原始分数）。
+            normalized = 1.0 / (1.0 + math.exp(-rerank_score))
             results.append((doc, round(normalized, 4)))
 
         # 5. 层次化父子分块：将重排序后的子块提升为完整父块
