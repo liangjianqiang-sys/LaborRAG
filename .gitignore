@@ -81,6 +81,7 @@ docs/面试备战方案.md
 docs/项目讲述稿.md
 docs/学习问答.md
 docs/理解路线图.md
+docs/Agent化改造决策.md
 
 # 逐次运行的评估产物（仅 backend/baselines/ 的基线快照随仓库分发）
 evaluation_reports/
