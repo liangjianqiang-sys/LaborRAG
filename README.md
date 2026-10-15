@@ -201,7 +201,7 @@ Embedding 与 Reranker 是**本地模型**（`BAAI/bge-m3` / `BAAI/bge-reranker-
 | 实践 | 实现 | 面试看点 |
 |------|------|---------|
 | **单元测试** | pytest **314 个用例 / 31 个测试文件**，含 4 类结构守卫：AST 扫描强制分层依赖方向、禁用模块级重依赖、校验每条路由挂载鉴权、原生 DLL 加载顺序 | `pyproject.toml` 配 pythonpath，`cd backend && pytest` 即跑，全绿约 26s |
-| **离线检索基线** | `scripts/retrieval_baseline.py`：走生产检索节点的确定性路径，输出 P@1/P@3/P@5/R@5/MRR/MAP | 重构前后各跑一次比对数字，把「零行为变化」从口头承诺变成可核验证据；`--retriever` 可做消融 |
+| **离线检索基线** | `scripts/retrieval_baseline.py`：走生产检索节点的确定性路径，输出 P@1/P@3/P@5/R@5/MRR/MAP | 重构前后各跑一次比对数字，把「零行为变化」从口头承诺变成可核验证据；`--retriever` 做检索器消融、`--no-domain-boost` 做领域规则库消融 |
 | **导入体检** | `scripts/smoke_import.py`：遍历 `app/**/*.py` 逐个 import，报告失败模块与慢导入 | 目录重构最容易断的是 import 链，静态体检比等到运行时报错更早发现 |
 | **管线冒烟** | `scripts/graph_smoke.py`：把 `grader_llm`/`gen_llm` 换成确定性桩，离线跑通「改写→分类→路由→检索→生成→校验」四条路径 | 完整链路依赖真实 LLM（有额度/网络/成本三重不确定性）。本脚本零成本可重复，回答「管线通不通」；真实评估回答「答得对不对」 |
 | **前端冒烟** | `scripts/frontend_smoke.py`：用系统 Chrome 无头渲染四个路由，断言页面特征内容 + 后端 API 连通性 | `tsc -b` + `vite build` 只证明「能编译」，证明不了「React 挂载了、浏览器真调通了后端」。曾真实发生：16 处 fetch 漏带鉴权头，构建全绿 |
@@ -423,8 +423,58 @@ cd backend && python scripts/retrieval_baseline.py -o baselines/pre_refactor.jso
 | map | 0.7384 | 0.7778 |
 
 两条路径的 P@1 相同 —— 概念注入已把正确法条锁定在第 1 位，重排器的价值体现在第 2–5 位
-（R@5 +0.075、MAP +0.039）。这组消融同时充当**基线敏感性验证**：配置一换数字就变，
+（R@5 +0.075、MAP +0.039）。这组对比同时充当**基线敏感性验证**：配置一换数字就变，
 说明它不是个常数。
+
+### 🔬 受控消融：领域规则库到底贡献了多少
+
+上面那组是**两条检索路径**的对比。而项目最核心的策略——**领域规则库注入**——的贡献，
+用 `--no-domain-boost` 在**同一套 20 题、同一份配置**上做了一次单变量消融：
+
+```bash
+cd backend
+python scripts/retrieval_baseline.py --subset full -o baselines/ablation_with_boost.json
+python scripts/retrieval_baseline.py --subset full --no-domain-boost -o baselines/ablation_without_boost.json
+```
+
+| 指标 | 开启领域规则库 | 关闭 | Δ |
+|------|------|------|------|
+| **precision@1** | **0.8500** | **0.2000** | **−0.6500** |
+| precision@3 | 0.4667 | 0.1667 | −0.3000 |
+| precision@5 | 0.2900 | 0.1100 | −0.1800 |
+| **recall@5** | **0.7750** | **0.3500** | **−0.4250** |
+| mrr | 0.9250 | 0.3226 | −0.6024 |
+| map | 0.7384 | 0.2326 | −0.5058 |
+
+**rank-1 命中变化：13 题因领域规则库而命中（关掉即 MISS），反向 0 题。**
+
+这 13 题覆盖全部问题类型（retrieve 易/中/难、calculate、compare），说明该策略不是只对某一类问题有效：
+
+| 类型 / 难度 | 题目 |
+|---|---|
+| retrieve / easy | 没签合同被辞了 |
+| retrieve / easy | 被公司开除了有赔偿吗？ |
+| retrieve / easy | 拖欠工资去哪投诉？ |
+| retrieve / medium | 加班工资怎么算？ |
+| retrieve / medium | 经济补偿金怎么计算？ |
+| retrieve / medium | 什么情况可以认定为工伤？ |
+| retrieve / medium | 女职工怀孕期间能安排夜班吗？ |
+| retrieve / medium | 劳动争议申请仲裁的时效是多久？ |
+| retrieve / hard | 下班路上被车撞了算工伤吗？ |
+| retrieve / hard | 公司没交社保我可以随时辞职并要求补偿吗？ |
+| calculate / hard | 月薪10000工作10年被违法辞退赔偿金多少？ |
+| compare / medium | 经济补偿金和赔偿金有什么区别？ |
+| compare / medium | 协商解除和公司单方辞退有什么区别？ |
+
+> **为什么这个策略有效？纯向量检索在这里不是「找不到」，而是「找错了那一条」。**
+> 劳动法条文用词高度重复——「经济补偿」同时出现在第 46 / 47 / 85 / 87 条，它们的语义
+> 向量非常接近，向量检索区分不出「该给补偿的情形」与「补偿怎么算」。领域规则库把
+> 「哪一条才对」这个外部知识显式写下来，并**强制置顶、不参与重排竞争**，
+> 从而绕过了向量空间里无法解决的排序竞争。
+>
+> 两份快照见 `baselines/ablation_with_boost.json` 与 `ablation_without_boost.json`，
+> 其 `meta.domain_boost_enabled` 字段自证配置；整个消融**零 LLM 调用**，单次约 1 分 50 秒
+> （只用本地 BGE-M3），**不消耗任何 API 额度**。
 
 > ⚠️ **读法提示**：P@k 的分母是 k 而非相关法条数。本数据集每题只标注 1–3 条相关法条，
 > 故 P@1/P@3/P@5 的**理论上限分别只有 1.0 / 0.633 / 0.380**。
