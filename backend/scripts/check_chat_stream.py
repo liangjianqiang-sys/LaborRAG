@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.schemas.chat import ChatRequest
 
-QUESTION = "月薪8000，工作5年，被辞退，经济补偿金是多少？"
+QUESTION = sys.argv[1] if len(sys.argv) > 1 else "月薪8000，工作5年，被辞退，经济补偿金是多少？"
 
 
 async def main() -> int:
